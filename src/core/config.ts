@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join, resolve } from 'path';
 
 export interface CodemapConfig {
@@ -31,16 +31,25 @@ export interface CodemapConfig {
   entry_points: string[] | null;
 }
 
+export const WELL_KNOWN_SOURCE_DIRS = [
+  'src', 'lib', 'app', 'api', 'routes', 'controllers',
+  'models', 'services', 'middleware', 'utils', 'helpers',
+  'components', 'pages', 'views', 'handlers', 'modules',
+];
+
 export const DEFAULT_CONFIG: Omit<CodemapConfig, 'root'> = {
-  include: ['src', 'lib', 'app'],
+  include: ['.'],
   exclude: [
     'node_modules',
     '__pycache__',
     'dist',
     'build',
     '.git',
+    '.codemap',
     '*.test.*',
     '*.spec.*',
+    '*.min.*',
+    'coverage',
   ],
   framework: null,
   output: '.codemap',
@@ -78,6 +87,9 @@ export async function loadConfig(
     } catch (error) {
       throw new Error(`Failed to parse .codemaprc: ${(error as Error).message}`);
     }
+  } else {
+    // No config file — auto-detect include directories
+    fileConfig.include = detectIncludeDirs(root);
   }
 
   return {
@@ -93,4 +105,30 @@ export async function loadConfig(
       ...(fileConfig.features || {}),
     },
   };
+}
+
+/**
+ * Auto-detect which directories to scan.
+ * If well-known source directories exist (src, lib, app, etc.), use those.
+ * Otherwise fall back to "." to scan everything from root.
+ */
+export function detectIncludeDirs(root: string): string[] {
+  const entries = readdirSync(root, { withFileTypes: true });
+  const dirs = entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+
+  const matched = WELL_KNOWN_SOURCE_DIRS.filter((d) => dirs.includes(d));
+
+  // If we found known source dirs, use them
+  // Otherwise scan from root (handles projects with root-level files)
+  if (matched.length > 0) {
+    // Also include root "." if there are source files at the root level
+    const rootHasSourceFiles = entries.some(
+      (e) => e.isFile() && /\.(ts|tsx|js|jsx|mjs|cjs|py)$/.test(e.name)
+    );
+    return rootHasSourceFiles ? ['.'] : matched;
+  }
+
+  return ['.'];
 }

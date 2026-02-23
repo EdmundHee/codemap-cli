@@ -1,13 +1,16 @@
 {
-  "include": ["src", "lib", "app"],
+  "include": ["."],
   "exclude": [
     "node_modules",
     "__pycache__",
     "dist",
     "build",
     ".git",
+    ".codemap",
     "*.test.*",
-    "*.spec.*"
+    "*.spec.*",
+    "*.min.*",
+    "coverage"
   ],
   "framework": null,
   "output": ".codemap",

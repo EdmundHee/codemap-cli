@@ -23,9 +23,14 @@ const LANGUAGE_MAP: Record<string, ScannedFile['language']> = {
 
 /**
  * Scan the project directory for source files, respecting include/exclude config.
+ * When include contains ".", scans root-level files and all subdirectories.
  */
 export async function scanFiles(config: CodemapConfig): Promise<ScannedFile[]> {
-  const patterns = config.include.map((dir) => join(dir, '**/*'));
+  const patterns = config.include.map((dir) => {
+    // "." means scan everything from root
+    if (dir === '.') return '**/*';
+    return join(dir, '**/*');
+  });
 
   const ignorePatterns = config.exclude.map((pattern) => {
     // If it's a directory name (no glob chars), convert to glob
