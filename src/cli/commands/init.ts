@@ -22,16 +22,18 @@ export const initCommand = new Command('init')
       // Auto-detect include directories based on actual project structure
       const detectedDirs = detectIncludeDirs(root);
 
-      // Only write user-specific overrides, not the full defaults.
-      // This way default excludes always stay up-to-date from the code.
+      // Write both include and exclude so users can see and customize both.
+      // Default excludes are always merged in loadConfig, so any extras
+      // the user adds here will be combined with the built-in defaults.
       const config: Record<string, any> = {
         include: detectedDirs,
+        exclude: [...DEFAULT_CONFIG.exclude],
       };
 
-      // Only write non-default values to keep .codemaprc minimal
       writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
       logger.success(`Created ${configPath}`);
       logger.info(`Auto-detected include dirs: ${detectedDirs.join(', ')}`);
+      logger.info(`Default excludes written — customize as needed`);
     } catch (error) {
       logger.error(`Failed to create config: ${(error as Error).message}`);
       process.exit(1);
