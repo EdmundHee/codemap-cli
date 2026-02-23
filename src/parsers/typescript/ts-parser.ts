@@ -2,6 +2,7 @@ import { Project, SourceFile, SyntaxKind, Node } from 'ts-morph';
 import { readFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { ScannedFile } from '../../core/scanner';
+import { filterCalls, truncateType } from '../../utils/call-filter';
 import {
   ParserInterface,
   ParsedFile,
@@ -68,17 +69,17 @@ export class TypeScriptParser implements ParserInterface {
       const methods: MethodInfo[] = cls.getMethods().map((method) => ({
         name: method.getName(),
         params: method.getParameters().map((p) => this.extractParam(p)),
-        return_type: method.getReturnType().getText(method) || 'void',
+        return_type: truncateType(method.getReturnType().getText(method) || 'void'),
         decorators: method.getDecorators().map((d) => `@${d.getName()}`),
         access: this.getAccessModifier(method),
         async: method.isAsync(),
         static: method.isStatic(),
-        calls: this.extractCallExpressions(method),
+        calls: filterCalls(this.extractCallExpressions(method)),
       }));
 
       const properties: PropertyInfo[] = cls.getProperties().map((prop) => ({
         name: prop.getName(),
-        type: prop.getType().getText(prop) || 'unknown',
+        type: truncateType(prop.getType().getText(prop) || 'unknown'),
         access: this.getAccessModifier(prop),
       }));
 
@@ -101,10 +102,10 @@ export class TypeScriptParser implements ParserInterface {
       functions.push({
         name: func.getName() || 'anonymous',
         params: func.getParameters().map((p) => this.extractParam(p)),
-        return_type: func.getReturnType().getText(func) || 'void',
+        return_type: truncateType(func.getReturnType().getText(func) || 'void'),
         async: func.isAsync(),
         exported: func.isExported(),
-        calls: this.extractCallExpressions(func),
+        calls: filterCalls(this.extractCallExpressions(func)),
       });
     }
 
@@ -115,10 +116,10 @@ export class TypeScriptParser implements ParserInterface {
         functions.push({
           name: varDecl.getName(),
           params: init.getParameters().map((p) => this.extractParam(p)),
-          return_type: init.getReturnType()?.getText(init) || varDecl.getType().getText(varDecl) || 'unknown',
+          return_type: truncateType(init.getReturnType()?.getText(init) || varDecl.getType().getText(varDecl) || 'unknown'),
           async: init.isAsync(),
           exported: varDecl.isExported(),
-          calls: this.extractCallExpressions(init),
+          calls: filterCalls(this.extractCallExpressions(init)),
         });
       }
     }
@@ -266,7 +267,7 @@ export class TypeScriptParser implements ParserInterface {
   private extractParam(param: any): ParamInfo {
     return {
       name: param.getName(),
-      type: param.getType().getText(param) || 'unknown',
+      type: truncateType(param.getType().getText(param) || 'unknown'),
       optional: param.isOptional?.() || false,
       ...(param.getInitializer?.() && { default: param.getInitializer().getText() }),
     };

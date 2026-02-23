@@ -2,6 +2,7 @@ import { readFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { join } from 'path';
 import { ScannedFile } from '../../core/scanner';
+import { filterCalls, truncateType } from '../../utils/call-filter';
 import {
   ParserInterface,
   ParsedFile,
@@ -120,12 +121,12 @@ export class PythonParser implements ParserInterface {
           methods.push({
             name: methodName,
             params: params.filter((p) => p.name !== 'self' && p.name !== 'cls'),
-            return_type: returnType,
+            return_type: truncateType(returnType),
             decorators: methodDecorators,
             access,
             async: funcNode.children.some((c: any) => c.type === 'async'),
             static: isStatic,
-            calls,
+            calls: filterCalls(calls),
           });
         }
 
@@ -139,7 +140,7 @@ export class PythonParser implements ParserInterface {
             if (left) {
               properties.push({
                 name: left.text,
-                type: typeAnnotation?.text || 'unknown',
+                type: truncateType(typeAnnotation?.text || 'unknown'),
                 access: 'public',
               });
             }
@@ -194,10 +195,10 @@ export class PythonParser implements ParserInterface {
         functions.push({
           name,
           params,
-          return_type: returnType,
+          return_type: truncateType(returnType),
           async: isAsync,
           exported,
-          calls,
+          calls: filterCalls(calls),
         });
       }
     }
@@ -360,7 +361,7 @@ export class PythonParser implements ParserInterface {
         const name = child.childForFieldName('name')?.text ||
           child.namedChildren.find((c: any) => c.type === 'identifier')?.text || 'unknown';
         const typeNode = child.childForFieldName('type');
-        const type = typeNode?.text || 'unknown';
+        const type = truncateType(typeNode?.text || 'unknown');
         params.push({ name, type });
       } else if (child.type === 'default_parameter') {
         const name = child.childForFieldName('name')?.text || 'unknown';
@@ -374,7 +375,7 @@ export class PythonParser implements ParserInterface {
       } else if (child.type === 'typed_default_parameter') {
         const name = child.childForFieldName('name')?.text || 'unknown';
         const typeNode = child.childForFieldName('type');
-        const type = typeNode?.text || 'unknown';
+        const type = truncateType(typeNode?.text || 'unknown');
         const value = child.childForFieldName('value')?.text;
         params.push({
           name,
