@@ -3,6 +3,7 @@ import { scanFiles, ScannedFile } from './scanner';
 import { Logger } from '../utils/logger';
 import { ParserInterface, ParsedFile } from '../parsers/parser.interface';
 import { TypeScriptParser } from '../parsers/typescript/ts-parser';
+import { PythonParser } from '../parsers/python/py-parser';
 import { detectFrameworks } from '../frameworks/detector';
 import { buildImportGraph } from '../analyzers/import-graph';
 import { buildCallGraph } from '../analyzers/call-graph';
@@ -26,7 +27,7 @@ export class Orchestrator {
     // Register parsers for supported languages
     this.parsers.set('typescript', new TypeScriptParser());
     this.parsers.set('javascript', new TypeScriptParser()); // ts-morph handles JS too
-    // TODO: Phase 4 — register Python parser
+    this.parsers.set('python', new PythonParser());
   }
 
   async run(): Promise<void> {
