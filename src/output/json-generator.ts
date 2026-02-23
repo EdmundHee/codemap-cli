@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { CodemapConfig } from '../core/config';
 import { ScannedFile } from '../core/scanner';
 import { ParsedFile } from '../parsers/parser.interface';
@@ -22,6 +24,10 @@ export interface CodemapData {
   import_graph: ImportGraph;
   config_dependencies: {
     env_vars: Record<string, { used_in: string[]; accessed_by: string[] }>;
+  };
+  dependencies: {
+    packages: Record<string, { version: string; type: 'production' | 'dev' | 'peer' }>;
+    source: string;
   };
   routes: any[];
   models: Record<string, any>;
@@ -126,6 +132,9 @@ export function generateJson(input: GenerateInput): CodemapData {
   // Detect entry points
   const entryPoints = config.entry_points || detectEntryPoints(parsed);
 
+  // Extract dependency versions from package manifests
+  const dependencies = extractDependencies(config.root);
+
   return {
     version: '1.0.0',
     generated_at: new Date().toISOString(),
@@ -142,6 +151,7 @@ export function generateJson(input: GenerateInput): CodemapData {
     types,
     call_graph: callGraph,
     import_graph: importGraph,
+    dependencies,
     config_dependencies: {
       env_vars: envVars,
     },
@@ -168,4 +178,122 @@ function detectEntryPoints(parsed: ParsedFile[]): string[] {
   return parsed
     .filter((p) => entryPatterns.some((pattern) => pattern.test(p.file.relative)))
     .map((p) => p.file.relative);
+}
+
+/**
+ * Extract dependency versions from package.json and/or requirements.txt.
+ * Tracks version constraints without scanning library source code.
+ */
+function extractDependencies(root: string): CodemapData['dependencies'] {
+  const packages: Record<string, { version: string; type: 'production' | 'dev' | 'peer' }> = {};
+  const sources: string[] = [];
+
+  // Node.js — package.json
+  const pkgJsonPath = join(root, 'package.json');
+  if (existsSync(pkgJsonPath)) {
+    try {
+      const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'));
+      sources.push('package.json');
+
+      if (pkgJson.dependencies) {
+        for (const [name, version] of Object.entries(pkgJson.dependencies)) {
+          packages[name] = { version: version as string, type: 'production' };
+        }
+      }
+      if (pkgJson.devDependencies) {
+        for (const [name, version] of Object.entries(pkgJson.devDependencies)) {
+          packages[name] = { version: version as string, type: 'dev' };
+        }
+      }
+      if (pkgJson.peerDependencies) {
+        for (const [name, version] of Object.entries(pkgJson.peerDependencies)) {
+          packages[name] = { version: version as string, type: 'peer' };
+        }
+      }
+    } catch {
+      // Ignore malformed package.json
+    }
+  }
+
+  // Python — requirements.txt
+  const reqPath = join(root, 'requirements.txt');
+  if (existsSync(reqPath)) {
+    try {
+      const content = readFileSync(reqPath, 'utf-8');
+      sources.push('requirements.txt');
+
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
+
+        // Parse: package==1.0.0, package>=1.0.0, package~=1.0.0, package
+        const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*([><=!~]+\s*.+)?$/);
+        if (match) {
+          packages[match[1]] = {
+            version: match[2]?.trim() || '*',
+            type: 'production',
+          };
+        }
+      }
+    } catch {
+      // Ignore malformed requirements.txt
+    }
+  }
+
+  // Python — requirements-dev.txt
+  const reqDevPath = join(root, 'requirements-dev.txt');
+  if (existsSync(reqDevPath)) {
+    try {
+      const content = readFileSync(reqDevPath, 'utf-8');
+      sources.push('requirements-dev.txt');
+
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
+
+        const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*([><=!~]+\s*.+)?$/);
+        if (match) {
+          packages[match[1]] = {
+            version: match[2]?.trim() || '*',
+            type: 'dev',
+          };
+        }
+      }
+    } catch {
+      // Ignore malformed requirements-dev.txt
+    }
+  }
+
+  // Python — pyproject.toml (basic extraction)
+  const pyprojectPath = join(root, 'pyproject.toml');
+  if (existsSync(pyprojectPath)) {
+    try {
+      const content = readFileSync(pyprojectPath, 'utf-8');
+      if (!sources.includes('pyproject.toml')) sources.push('pyproject.toml');
+
+      // Extract from [project.dependencies] section — basic line-by-line parsing
+      const depMatch = content.match(/\[project\]\s[\s\S]*?dependencies\s*=\s*\[([\s\S]*?)\]/);
+      if (depMatch) {
+        const depBlock = depMatch[1];
+        for (const line of depBlock.split('\n')) {
+          const cleaned = line.replace(/[",]/g, '').trim();
+          if (!cleaned) continue;
+          const match = cleaned.match(/^([a-zA-Z0-9_.-]+)\s*([><=!~]+\s*.+)?$/);
+          if (match) {
+            packages[match[1]] = {
+              version: match[2]?.trim() || '*',
+              type: 'production',
+            };
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed pyproject.toml
+    }
+  }
+
+  return {
+    packages,
+    source: sources.join(', '),
+  };
 }

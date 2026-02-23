@@ -160,6 +160,20 @@ export function generateMarkdown(data: CodemapData): string {
     lines.push('');
   }
 
+  // Dependencies
+  const deps = data.dependencies;
+  if (deps && Object.keys(deps.packages).length > 0) {
+    lines.push(`## DEPENDENCIES [${deps.source}]`);
+    const byType = { production: [] as string[], dev: [] as string[], peer: [] as string[] };
+    for (const [name, info] of Object.entries(deps.packages)) {
+      byType[info.type].push(`${name}@${info.version}`);
+    }
+    if (byType.production.length) lines.push(`prod: ${byType.production.join(', ')}`);
+    if (byType.dev.length) lines.push(`dev: ${byType.dev.join(', ')}`);
+    if (byType.peer.length) lines.push(`peer: ${byType.peer.join(', ')}`);
+    lines.push('');
+  }
+
   // Environment dependencies
   const envVars = data.config_dependencies?.env_vars;
   if (envVars && Object.keys(envVars).length > 0) {

@@ -32,7 +32,7 @@ export interface CodemapConfig {
 }
 
 export const WELL_KNOWN_SOURCE_DIRS = [
-  'src', 'lib', 'app', 'api', 'routes', 'controllers',
+  'src', 'app', 'api', 'routes', 'controllers',
   'models', 'services', 'middleware', 'utils', 'helpers',
   'components', 'pages', 'views', 'handlers', 'modules',
 ];
@@ -44,12 +44,16 @@ export const DEFAULT_CONFIG: Omit<CodemapConfig, 'root'> = {
     '__pycache__',
     'dist',
     'build',
+    'lib',
     '.git',
     '.codemap',
     '*.test.*',
     '*.spec.*',
     '*.min.*',
     'coverage',
+    'vendor',
+    '.next',
+    '.nuxt',
   ],
   framework: null,
   output: '.codemap',
