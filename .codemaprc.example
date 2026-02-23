@@ -1,0 +1,27 @@
+{
+  "include": ["src", "lib", "app"],
+  "exclude": [
+    "node_modules",
+    "__pycache__",
+    "dist",
+    "build",
+    ".git",
+    "*.test.*",
+    "*.spec.*"
+  ],
+  "framework": null,
+  "output": ".codemap",
+  "features": {
+    "call_graph": true,
+    "import_graph": true,
+    "routes": true,
+    "models": true,
+    "types": true,
+    "data_flow": true,
+    "config_deps": true,
+    "middleware": true
+  },
+  "detail": "full",
+  "max_call_depth": 5,
+  "entry_points": null
+}

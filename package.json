@@ -1,0 +1,54 @@
+{
+  "name": "codemap-cli",
+  "version": "0.1.0",
+  "description": "Static analysis CLI that generates relationship maps of codebases for AI-assisted development",
+  "main": "dist/cli/index.js",
+  "bin": {
+    "codemap": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/cli/index.ts",
+    "start": "node dist/cli/index.js",
+    "lint": "eslint src --ext .ts",
+    "test": "jest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "codemap",
+    "static-analysis",
+    "ast",
+    "dependency-graph",
+    "call-graph",
+    "code-relationships",
+    "ai-tools",
+    "developer-tools"
+  ],
+  "author": "Edmund Hee",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EdmundHee/codemap-cli.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "fast-glob": "^3.3.2",
+    "ora": "^8.0.1",
+    "ts-morph": "^23.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "ts-node": "^10.9.2",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.0",
+    "@types/jest": "^29.5.0"
+  }
+}

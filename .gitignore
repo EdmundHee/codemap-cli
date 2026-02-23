@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.codemap/
+*.tgz
+.env
+.DS_Store
+coverage/
+*.log
