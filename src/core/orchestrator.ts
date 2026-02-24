@@ -78,6 +78,13 @@ export class Orchestrator {
     // Step 6: Write output
     this.logger.start('Writing output files...');
     await this.writeOutput(codemapData);
+
+    // Print summary (visible in Claude Code hook output)
+    const totalClasses = Object.keys(codemapData.classes || {}).length;
+    const totalFunctions = Object.keys(codemapData.functions || {}).length;
+    this.logger.success(
+      `Codemap generated: ${parsed.length} files, ${totalClasses} classes, ${totalFunctions} functions`
+    );
   }
 
   private async parseFiles(files: ScannedFile[]): Promise<ParsedFile[]> {

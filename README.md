@@ -297,7 +297,7 @@ Add this to your project's `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "codemap check --quiet || codemap generate"
+            "command": "codemap check || codemap generate"
           }
         ]
       }
