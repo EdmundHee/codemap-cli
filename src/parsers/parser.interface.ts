@@ -88,6 +88,9 @@ export interface ParsedFile {
   types: TypeInfo[];
   /** Raw env var references found (e.g. process.env.X) */
   envVars: string[];
+  /** Calls from module-level expressions (closures, array initializers, etc.)
+   *  not attributed to any named function or method */
+  moduleCalls?: string[];
 }
 
 /**

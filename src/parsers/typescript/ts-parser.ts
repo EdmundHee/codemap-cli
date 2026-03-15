@@ -58,6 +58,7 @@ export class TypeScriptParser implements ParserInterface {
       const exports = this.extractExports(sourceFile);
       const types = this.extractTypes(sourceFile);
       const envVars = this.extractEnvVars(content);
+      const moduleCalls = this.extractModuleLevelCalls(sourceFile, functions);
 
       return {
         file,
@@ -68,6 +69,7 @@ export class TypeScriptParser implements ParserInterface {
         exports,
         types,
         envVars,
+        ...(moduleCalls.length > 0 && { moduleCalls }),
       };
     } finally {
       this.project.removeSourceFile(sourceFile);
@@ -264,6 +266,34 @@ export class TypeScriptParser implements ParserInterface {
     }
 
     return envVars;
+  }
+
+  /**
+   * Extract call expressions from module-level variable initializers
+   * (arrays, objects, etc.) that aren't already captured as named functions.
+   * This catches calls from closures in data structures like:
+   *   const SIGNALS = [{ detect: (x) => someHelper(x) }]
+   */
+  private extractModuleLevelCalls(source: SourceFile, trackedFunctions: FunctionInfo[]): string[] {
+    const trackedNames = new Set(trackedFunctions.map(f => f.name));
+    const moduleCalls: string[] = [];
+
+    for (const varDecl of source.getVariableDeclarations()) {
+      // Skip arrow functions assigned to variables — these are already
+      // tracked as named functions in extractFunctions()
+      const init = varDecl.getInitializer();
+      if (!init || Node.isArrowFunction(init)) continue;
+
+      // Extract calls from the initializer (arrays, objects, etc.)
+      const calls = filterCalls(this.extractCallExpressions(init));
+      for (const call of calls) {
+        if (!moduleCalls.includes(call)) {
+          moduleCalls.push(call);
+        }
+      }
+    }
+
+    return moduleCalls;
   }
 
   private extractCallExpressions(node: Node): string[] {
