@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { generateCommand } from './commands/generate';
 import { initCommand } from './commands/init';
 import { diffCommand } from './commands/diff';
@@ -9,12 +11,15 @@ import { queryCommand } from './commands/query';
 import { checkCommand } from './commands/check';
 import { healthCommand } from './commands/health';
 
+// Read version from package.json so it stays in sync with npm version
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
+
 const program = new Command();
 
 program
   .name('codemap')
   .description('Static analysis CLI that generates relationship maps of codebases for AI-assisted development')
-  .version('0.1.0');
+  .version(pkg.version);
 
 program.addCommand(generateCommand);
 program.addCommand(initCommand);
