@@ -116,6 +116,42 @@ codemap query --calls <name>        # Show what a function calls
 codemap query --json                # Output as JSON
 ```
 
+### `codemap analyze`
+
+Run structural analysis on the generated codemap to find issues.
+
+```bash
+codemap analyze --dead-code         # Detect unused functions and methods
+codemap analyze --duplicates        # Detect redundant/duplicate functions
+codemap analyze --circular          # Detect circular dependencies
+codemap analyze --all               # Run all checks at once
+codemap analyze --all --json        # Output raw JSON for scripting
+```
+
+### `codemap health`
+
+Show a project health score (0–100) with metrics, hotspots, and coupling data.
+
+```bash
+codemap health                      # Show full health report
+codemap health --summary            # One-line score only
+codemap health --json               # Output raw JSON
+codemap health --gate               # Exit code 1 if below threshold (CI mode)
+codemap health --gate --threshold 80  # Custom minimum score
+codemap health --no-degrade         # Fail if score dropped from last run
+```
+
+The health score factors in complexity, dead code, god classes, nesting depth, and module coupling. Run `codemap generate` at least twice to see trend data.
+
+### `codemap diff`
+
+Show what changed in the codebase since the last codemap generation.
+
+```bash
+codemap diff                        # Show changes since last generation
+codemap diff --update               # Show changes, then regenerate
+```
+
 ## Configuration
 
 The `.codemaprc` file controls what gets scanned and how. Created by `codemap init`.
@@ -323,7 +359,7 @@ codemap check --quiet      # exit code only (0=fresh, 1=stale, 2=missing)
 src/
 ├── cli/                  # CLI entry point and commands
 │   ├── index.ts          # Commander setup
-│   └── commands/         # generate, init, query, check, analyze, diff
+│   └── commands/         # generate, init, query, check, analyze, diff, health
 ├── core/                 # Core logic
 │   ├── config.ts         # .codemaprc loading and defaults
 │   ├── scanner.ts        # File discovery (fast-glob)
@@ -334,27 +370,32 @@ src/
 │   ├── typescript/       # ts-morph based
 │   ├── python/           # web-tree-sitter WASM based
 │   └── vue/              # Script extraction + TS delegation
-├── analyzers/            # Relationship builders
-│   ├── call-graph.ts     # Function → calls mapping
-│   └── import-graph.ts   # File → imports mapping
+├── analyzers/            # Structural analysis
+│   ├── call-graph.ts     # Forward + reverse call graph with method resolution
+│   ├── import-graph.ts   # File → imports mapping
+│   ├── coupling.ts       # Module coupling metrics (afferent/efferent/instability)
+│   ├── dead-code.ts      # Dead code detection from reverse call graph
+│   ├── duplicates.ts     # Duplicate function detection
+│   └── circular-deps.ts  # Circular dependency detection
 ├── frameworks/           # Auto-detection
 │   └── detector.ts
 ├── output/               # Generators
 │   ├── json-generator.ts # Full JSON output
 │   └── md-generator.ts   # Compact MD + per-directory modules
 ├── mcp/                  # MCP server
-│   └── server.ts         # Multi-project MCP with stdio transport
+│   ├── server.ts         # Multi-project MCP with stdio transport
+│   └── formatters.ts     # Markdown formatters for MCP tool output
 └── utils/
     ├── call-filter.ts    # Noise reduction (built-in filtering, type truncation)
     ├── logger.ts
-    ├── hash.ts
     └── file-utils.ts
 ```
 
 ## Roadmap
 
-- [ ] `codemap diff` — detect changes since last generation
-- [ ] `codemap analyze` — dead code detection, duplicate functions, unused exports
+- [x] `codemap diff` — detect changes since last generation
+- [x] `codemap analyze` — dead code detection, duplicate functions, circular dependencies
+- [x] `codemap health` — project health scoring with CI quality gates
 - [ ] Route extraction for Express, FastAPI, Django, Flask
 - [ ] Model/schema extraction for Prisma, SQLAlchemy, Mongoose
 - [ ] Middleware chain mapping
