@@ -195,7 +195,9 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
   // --- Tool: codemap_projects ---
   server.tool(
     'codemap_projects',
-    'List all registered codemap projects and their status. Use this to discover available projects in multi-project setups.',
+    'List all registered codemap projects and their status (file counts, languages, frameworks). '
+    + 'Use when you need to know which projects are available, check if codemap data exists, '
+    + 'or discover project names for multi-project queries.',
     {},
     async () => {
       const list = projects.map((p) => {
@@ -223,7 +225,11 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
   // --- Tool: codemap_overview ---
   server.tool(
     'codemap_overview',
-    'Get a high-level overview of a project: modules, frameworks, languages, file counts, and dependencies. Use this FIRST to understand project structure before exploring with grep or read.',
+    'Get a high-level overview of the entire project: every module/directory with its classes and functions, '
+    + 'frameworks, languages, dependencies, and entry points. Use this FIRST when you need to understand '
+    + 'the project structure, explore the codebase, find where code lives, or orient yourself in an '
+    + 'unfamiliar repo. Returns the full project map in one call — much faster than reading files or '
+    + 'running ls/find/glob across directories.',
     { project: projectParam },
     async ({ project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
@@ -235,9 +241,12 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
   // --- Tool: codemap_module ---
   server.tool(
     'codemap_module',
-    'Get all classes, functions, types, and imports for a directory. Use INSTEAD of reading individual files when you need to understand a module.',
+    'Get all classes, functions, types, imports, and exports for a specific directory/module. '
+    + 'Use INSTEAD of reading individual files when you need to understand what a module contains, '
+    + 'what it exports, or what functions and classes are defined there. Returns every entity with '
+    + 'signatures, parameters, and relationships in one call — replaces multiple file reads.',
     {
-      directory: z.string().describe('Directory path to query (e.g. "src/core", "backend/api")'),
+      directory: z.string().describe('Directory path to query (e.g. "src/core", "backend/api", "lib/utils")'),
       project: projectParam,
     },
     async ({ directory, project: projectName }) => {
@@ -252,9 +261,14 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
   // --- Tool: codemap_query ---
   server.tool(
     'codemap_query',
-    'Search for a function, class, method, type, or file by name across the entire codebase. Use INSTEAD of grep when looking for definitions or declarations.',
+    'Search for any function, class, method, type, interface, or file by name across the entire codebase. '
+    + 'Use INSTEAD of grep/Grep/Glob when looking for where something is defined, finding a function '
+    + 'definition, locating a class, or checking if something already exists. Supports exact and fuzzy '
+    + 'matching. Returns the full signature, file location, parameters, return type, and call '
+    + 'relationships — much richer than grep output. Also use this to find existing reusable code '
+    + 'before writing new functions.',
     {
-      name: z.string().describe('Name to search for (partial matching supported)'),
+      name: z.string().describe('Name to search for — supports partial/fuzzy matching (e.g. "createOrder", "User", "parse", "validate")'),
       project: projectParam,
     },
     async ({ name, project: projectName }) => {
@@ -290,9 +304,12 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
   // --- Tool: codemap_callers ---
   server.tool(
     'codemap_callers',
-    'Find all callers of a function — use for impact analysis before modifying code. Returns the complete call graph in one query instead of multiple grep searches.',
+    'Find all callers of a function or method — who calls this, where is it used, what references it. '
+    + 'Use for impact analysis before modifying, renaming, or deleting code. Answers: "what will break '
+    + 'if I change this?", "how widely is this used?", "is it safe to refactor?". Returns the complete '
+    + 'reverse call graph in one query — faster and more complete than grep/Grep for finding usages.',
     {
-      name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate")'),
+      name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate", "parseConfig")'),
       project: projectParam,
     },
     async ({ name, project: projectName }) => {
@@ -305,9 +322,13 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
   // --- Tool: codemap_calls ---
   server.tool(
     'codemap_calls',
-    'Find all functions called by a given function — use for dependency tracing before refactoring. Returns the complete call graph in one query.',
+    'Find all functions called by a given function — what does it depend on, what does it use internally. '
+    + 'Use for dependency tracing before refactoring, understanding how a function works without reading '
+    + 'its source, or checking what a function relies on. Answers: "what does this function do?", '
+    + '"what are its dependencies?", "what would I need to mock in tests?". Returns the complete '
+    + 'forward call graph in one query.',
     {
-      name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate")'),
+      name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate", "buildReport")'),
       project: projectParam,
     },
     async ({ name, project: projectName }) => {
@@ -320,7 +341,10 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
   // --- Tool: codemap_health ---
   server.tool(
     'codemap_health',
-    'Get project health score, code metrics (complexity, coupling, dead code), and hotspots. Returns structured data: health score 0-100, per-function complexity, per-module coupling (Ca/Ce/Instability), god class detection, and dead code percentage. Use this to assess code quality and identify areas needing refactoring.',
+    'Get project health score (0-100) with detailed code quality metrics: complexity hotspots, '
+    + 'module coupling (afferent/efferent/instability), dead code percentage, god class detection, '
+    + 'and maintainability issues. Use when asked about code quality, technical debt, what needs '
+    + 'refactoring, or which parts of the codebase are problematic. Can scope to a specific module.',
     {
       scope: z
         .string()
@@ -340,7 +364,9 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
   // --- Tool: codemap_health_diff ---
   server.tool(
     'codemap_health_diff',
-    'Compare health between current and previous run. Returns score delta, which metrics improved or degraded, and trend direction. Use after making changes to see if code quality improved or regressed.',
+    'Compare health between current and previous codemap generation. Shows score delta, which metrics '
+    + 'improved or degraded, and trend direction. Use after making changes to verify code quality '
+    + 'improved, or in CI to detect regressions. Answers: "did my changes improve or hurt quality?".',
     {
       project: projectParam,
     },
@@ -357,7 +383,12 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
   // --- Tool: codemap_structures ---
   server.tool(
     'codemap_structures',
-    'Get raw structural analysis data for refactoring decisions. Types: "cohesion" (LCOM clusters for class splitting), "hotspots" (complex functions with callee data), "dead_code" (unreachable functions). Returns computed data, not suggestions — you decide what to refactor.',
+    'Get raw structural analysis data for refactoring decisions. Three analysis types: '
+    + '"cohesion" — LCOM4 clusters showing which methods/fields group together (use to decide '
+    + 'how to split a god class); "hotspots" — most complex functions ranked by cyclomatic '
+    + 'complexity with their callees (use to find what to simplify); "dead_code" — unreachable '
+    + 'functions that are never called (use to find safe deletion candidates). Returns computed '
+    + 'data, not opinions — you decide what to act on.',
     {
       type: z.enum(['cohesion', 'hotspots', 'dead_code']).describe('Analysis type'),
       target: z.string().optional().describe('Optional: specific class or function name to focus on'),

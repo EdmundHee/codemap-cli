@@ -1,5 +1,5 @@
 {
-  "name": "codemap-cli",
+  "name": "@gingerdev/codemap-cli",
   "version": "0.1.0",
   "description": "Static analysis CLI that generates relationship maps of codebases for AI-assisted development",
   "main": "dist/cli/index.js",
@@ -7,12 +7,18 @@
     "codemap": "dist/cli/index.js",
     "codemap-mcp": "dist/mcp/server.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "ts-node src/cli/index.ts",
     "start": "node dist/cli/index.js",
     "lint": "eslint src --ext .ts",
     "test": "jest",
+    "postinstall": "node dist/cli/postinstall.js || true",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
