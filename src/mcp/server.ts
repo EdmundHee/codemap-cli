@@ -33,7 +33,21 @@ import {
   getClass,
   getFile,
   getType,
+  QueryResult,
 } from '../core/query-engine';
+import {
+  formatOverview,
+  formatModule,
+  formatQueryResult,
+  formatSearchResults,
+  formatCallers,
+  formatCalls,
+  formatProjects,
+  formatHealth,
+  formatStructures,
+  formatHealthDiff,
+} from './formatters';
+import { computeTrend } from '../analyzers/history';
 
 // --- Multi-project registry ---
 
@@ -171,8 +185,191 @@ function errorResult(message: string) {
   return { content: [{ type: 'text' as const, text: message }], isError: true };
 }
 
-function jsonResult(data: any) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+function mdResult(markdown: string) {
+  return { content: [{ type: 'text' as const, text: markdown }] };
+}
+
+// --- Tool registration ---
+
+function registerTools(server: McpServer, projects: ProjectEntry[], projectParam: any) {
+  // --- Tool: codemap_projects ---
+  server.tool(
+    'codemap_projects',
+    'List all registered codemap projects and their status. Use this to discover available projects in multi-project setups.',
+    {},
+    async () => {
+      const list = projects.map((p) => {
+        const data = loadProjectData(p);
+        return {
+          name: p.name,
+          root: p.root,
+          has_codemap: !!data,
+          ...(data
+            ? {
+                files: Object.keys(data.files).length,
+                classes: Object.keys(data.classes).length,
+                functions: Object.keys(data.functions).length,
+                frameworks: data.project.frameworks,
+                languages: data.project.languages,
+                generated_at: data.generated_at,
+              }
+            : {}),
+        };
+      });
+      return mdResult(formatProjects(list));
+    }
+  );
+
+  // --- Tool: codemap_overview ---
+  server.tool(
+    'codemap_overview',
+    'Get a high-level overview of a project: modules, frameworks, languages, file counts, and dependencies. Use this FIRST to understand project structure before exploring with grep or read.',
+    { project: projectParam },
+    async ({ project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      return mdResult(formatOverview(getOverview(resolved.data)));
+    }
+  );
+
+  // --- Tool: codemap_module ---
+  server.tool(
+    'codemap_module',
+    'Get all classes, functions, types, and imports for a directory. Use INSTEAD of reading individual files when you need to understand a module.',
+    {
+      directory: z.string().describe('Directory path to query (e.g. "src/core", "backend/api")'),
+      project: projectParam,
+    },
+    async ({ directory, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const result = getModule(resolved.data, directory);
+      if (!result) return errorResult(`Module "${directory}" not found.`);
+      return mdResult(formatModule(result));
+    }
+  );
+
+  // --- Tool: codemap_query ---
+  server.tool(
+    'codemap_query',
+    'Search for a function, class, method, type, or file by name across the entire codebase. Use INSTEAD of grep when looking for definitions or declarations.',
+    {
+      name: z.string().describe('Name to search for (partial matching supported)'),
+      project: projectParam,
+    },
+    async ({ name, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const { data } = resolved;
+
+      // Try exact lookups first
+      const funcResult = getFunction(data, name);
+      if (funcResult) return mdResult(formatQueryResult(funcResult));
+
+      const clsResult = getClass(data, name);
+      if (clsResult) return mdResult(formatQueryResult(clsResult));
+
+      const typeResult = getType(data, name);
+      if (typeResult) return mdResult(formatQueryResult(typeResult));
+
+      const fileResult = getFile(data, name);
+      if (fileResult) {
+        if (Array.isArray(fileResult)) {
+          return mdResult(formatSearchResults(fileResult));
+        }
+        return mdResult(formatQueryResult(fileResult));
+      }
+
+      // Fall back to fuzzy search
+      const results = search(data, name);
+      if (results.length === 0) return mdResult(`No results for "${name}".`);
+      return mdResult(formatSearchResults(results.map((r) => ({ type: r.type, name: r.name, file: r.file }))));
+    }
+  );
+
+  // --- Tool: codemap_callers ---
+  server.tool(
+    'codemap_callers',
+    'Find all callers of a function — use for impact analysis before modifying code. Returns the complete call graph in one query instead of multiple grep searches.',
+    {
+      name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate")'),
+      project: projectParam,
+    },
+    async ({ name, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      return mdResult(formatCallers(getCallers(resolved.data, name)));
+    }
+  );
+
+  // --- Tool: codemap_calls ---
+  server.tool(
+    'codemap_calls',
+    'Find all functions called by a given function — use for dependency tracing before refactoring. Returns the complete call graph in one query.',
+    {
+      name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate")'),
+      project: projectParam,
+    },
+    async ({ name, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      return mdResult(formatCalls(getCalls(resolved.data, name)));
+    }
+  );
+
+  // --- Tool: codemap_health ---
+  server.tool(
+    'codemap_health',
+    'Get project health score, code metrics (complexity, coupling, dead code), and hotspots. Returns structured data: health score 0-100, per-function complexity, per-module coupling (Ca/Ce/Instability), god class detection, and dead code percentage. Use this to assess code quality and identify areas needing refactoring.',
+    {
+      scope: z
+        .string()
+        .optional()
+        .describe('Optional scope to filter: module path (e.g. "src/core") or "project" for full report'),
+      project: projectParam,
+    },
+    async ({ scope, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const { data } = resolved;
+      if (!data.health) return errorResult('No health data. Regenerate codemap with latest version: `codemap generate`');
+      return mdResult(formatHealth(data.health, data.module_metrics || [], scope));
+    }
+  );
+
+  // --- Tool: codemap_health_diff ---
+  server.tool(
+    'codemap_health_diff',
+    'Compare health between current and previous run. Returns score delta, which metrics improved or degraded, and trend direction. Use after making changes to see if code quality improved or regressed.',
+    {
+      project: projectParam,
+    },
+    async ({ project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const outputDir = join(resolved.project.root, '.codemap');
+      const trend = computeTrend(outputDir);
+      if (!trend) return mdResult('No history available. Run `codemap generate` at least twice to see trends.');
+      return mdResult(formatHealthDiff(trend));
+    }
+  );
+
+  // --- Tool: codemap_structures ---
+  server.tool(
+    'codemap_structures',
+    'Get raw structural analysis data for refactoring decisions. Types: "cohesion" (LCOM clusters for class splitting), "hotspots" (complex functions with callee data), "dead_code" (unreachable functions). Returns computed data, not suggestions — you decide what to refactor.',
+    {
+      type: z.enum(['cohesion', 'hotspots', 'dead_code']).describe('Analysis type'),
+      target: z.string().optional().describe('Optional: specific class or function name to focus on'),
+      project: projectParam,
+    },
+    async ({ type, target, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const { data } = resolved;
+      return mdResult(formatStructures(data, type, target));
+    }
+  );
 }
 
 // --- Main ---
@@ -195,125 +392,8 @@ async function main() {
         : 'Project name (optional — defaults to the only registered project)'
     );
 
-  // --- Tool: codemap_projects ---
-  server.tool(
-    'codemap_projects',
-    'List all registered codemap projects and their status.',
-    {},
-    async () => {
-      const list = projects.map((p) => {
-        const data = loadProjectData(p);
-        return {
-          name: p.name,
-          root: p.root,
-          has_codemap: !!data,
-          ...(data
-            ? {
-                files: Object.keys(data.files).length,
-                classes: Object.keys(data.classes).length,
-                functions: Object.keys(data.functions).length,
-                frameworks: data.project.frameworks,
-                languages: data.project.languages,
-                generated_at: data.generated_at,
-              }
-            : {}),
-        };
-      });
-      return jsonResult(list);
-    }
-  );
-
-  // --- Tool: codemap_overview ---
-  server.tool(
-    'codemap_overview',
-    'Get a high-level overview of a project: modules, frameworks, languages, file counts, and dependencies. Use this first to understand project structure.',
-    { project: projectParam },
-    async ({ project: projectName }) => {
-      const resolved = resolveProject(projects, projectName);
-      if ('error' in resolved) return errorResult(resolved.error);
-      return jsonResult(getOverview(resolved.data));
-    }
-  );
-
-  // --- Tool: codemap_module ---
-  server.tool(
-    'codemap_module',
-    'Get detailed information about a specific directory/module: its classes, functions, types, and imports.',
-    {
-      directory: z.string().describe('Directory path to query (e.g. "src/core", "backend/api")'),
-      project: projectParam,
-    },
-    async ({ directory, project: projectName }) => {
-      const resolved = resolveProject(projects, projectName);
-      if ('error' in resolved) return errorResult(resolved.error);
-      const result = getModule(resolved.data, directory);
-      if (!result) return jsonResult({ error: `Module "${directory}" not found.` });
-      return jsonResult(result);
-    }
-  );
-
-  // --- Tool: codemap_query ---
-  server.tool(
-    'codemap_query',
-    'Search for a function, class, method, type, or file by name. Returns matching entries with their details.',
-    {
-      name: z.string().describe('Name to search for (partial matching supported)'),
-      project: projectParam,
-    },
-    async ({ name, project: projectName }) => {
-      const resolved = resolveProject(projects, projectName);
-      if ('error' in resolved) return errorResult(resolved.error);
-      const { data } = resolved;
-
-      // Try exact lookups first
-      const funcResult = getFunction(data, name);
-      if (funcResult) return jsonResult(funcResult);
-
-      const clsResult = getClass(data, name);
-      if (clsResult) return jsonResult(clsResult);
-
-      const typeResult = getType(data, name);
-      if (typeResult) return jsonResult(typeResult);
-
-      const fileResult = getFile(data, name);
-      if (fileResult) return jsonResult(fileResult);
-
-      // Fall back to fuzzy search
-      const results = search(data, name);
-      if (results.length === 0) return jsonResult({ message: `No results for "${name}".` });
-      return jsonResult(results.map((r) => ({ type: r.type, name: r.name, file: r.file })));
-    }
-  );
-
-  // --- Tool: codemap_callers ---
-  server.tool(
-    'codemap_callers',
-    'Find all functions/methods that call a given function. Useful for understanding impact before modifying code.',
-    {
-      name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate")'),
-      project: projectParam,
-    },
-    async ({ name, project: projectName }) => {
-      const resolved = resolveProject(projects, projectName);
-      if ('error' in resolved) return errorResult(resolved.error);
-      return jsonResult(getCallers(resolved.data, name));
-    }
-  );
-
-  // --- Tool: codemap_calls ---
-  server.tool(
-    'codemap_calls',
-    'Find all functions/methods that a given function calls. Useful for understanding dependencies before refactoring.',
-    {
-      name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate")'),
-      project: projectParam,
-    },
-    async ({ name, project: projectName }) => {
-      const resolved = resolveProject(projects, projectName);
-      if ('error' in resolved) return errorResult(resolved.error);
-      return jsonResult(getCalls(resolved.data, name));
-    }
-  );
+  // Register all tools
+  registerTools(server, projects, projectParam);
 
   // Connect via stdio transport
   const transport = new StdioServerTransport();

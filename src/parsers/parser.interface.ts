@@ -17,6 +17,14 @@ export interface MethodInfo {
   static: boolean;
   /** Functions/methods this method calls */
   calls: string[];
+  /** Cyclomatic complexity (decision point count, starting at 1) */
+  complexity: number;
+  /** Number of lines in the method body */
+  lineCount: number;
+  /** Maximum nesting depth of control flow */
+  nestingDepth: number;
+  /** Instance variable accesses (e.g. ["db", "cache"]) — used for LCOM cohesion analysis */
+  instanceVarAccesses: string[];
 }
 
 export interface PropertyInfo {
@@ -42,6 +50,12 @@ export interface FunctionInfo {
   exported: boolean;
   /** Functions this function calls */
   calls: string[];
+  /** Cyclomatic complexity (decision point count, starting at 1) */
+  complexity: number;
+  /** Number of lines in the function body */
+  lineCount: number;
+  /** Maximum nesting depth of control flow */
+  nestingDepth: number;
 }
 
 export interface ImportInfo {

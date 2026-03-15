@@ -11,6 +11,7 @@ import { buildCallGraph } from '../analyzers/call-graph';
 import { generateJson, CodemapData } from '../output/json-generator';
 import { generateMarkdown, generateModuleMarkdown } from '../output/md-generator';
 import { pathToModuleKey } from '../utils/file-utils';
+import { appendHistory } from '../analyzers/history';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
@@ -79,11 +80,18 @@ export class Orchestrator {
     this.logger.start('Writing output files...');
     await this.writeOutput(codemapData);
 
+    // Step 7: Save health history
+    if (codemapData.health) {
+      const outputDir = join(this.config.root, this.config.output);
+      appendHistory(outputDir, codemapData.health, parsed.length, 0, 0);
+    }
+
     // Print summary (visible in Claude Code hook output)
     const totalClasses = Object.keys(codemapData.classes || {}).length;
     const totalFunctions = Object.keys(codemapData.functions || {}).length;
+    const healthScore = codemapData.health ? ` | Health: ${codemapData.health.score}/100` : '';
     this.logger.success(
-      `Codemap generated: ${parsed.length} files, ${totalClasses} classes, ${totalFunctions} functions`
+      `Codemap generated: ${parsed.length} files, ${totalClasses} classes, ${totalFunctions} functions${healthScore}`
     );
   }
 

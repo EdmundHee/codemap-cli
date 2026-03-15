@@ -7,6 +7,7 @@ import { diffCommand } from './commands/diff';
 import { analyzeCommand } from './commands/analyze';
 import { queryCommand } from './commands/query';
 import { checkCommand } from './commands/check';
+import { healthCommand } from './commands/health';
 
 const program = new Command();
 
@@ -21,5 +22,6 @@ program.addCommand(diffCommand);
 program.addCommand(analyzeCommand);
 program.addCommand(queryCommand);
 program.addCommand(checkCommand);
+program.addCommand(healthCommand);
 
 program.parse(process.argv);

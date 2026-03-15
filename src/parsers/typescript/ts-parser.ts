@@ -15,6 +15,12 @@ import {
   ParamInfo,
   PropertyInfo,
 } from '../parser.interface';
+import {
+  computeTSComplexity,
+  computeTSLineCount,
+  computeTSNestingDepth,
+  extractTSInstanceVarAccesses,
+} from './ts-metrics';
 
 export class TypeScriptParser implements ParserInterface {
   private project: Project;
@@ -81,6 +87,10 @@ export class TypeScriptParser implements ParserInterface {
         async: method.isAsync(),
         static: method.isStatic(),
         calls: filterCalls(this.extractCallExpressions(method)),
+        complexity: computeTSComplexity(method),
+        lineCount: computeTSLineCount(method),
+        nestingDepth: computeTSNestingDepth(method),
+        instanceVarAccesses: extractTSInstanceVarAccesses(method),
       }));
 
       const properties: PropertyInfo[] = cls.getProperties().map((prop) => ({
@@ -112,6 +122,9 @@ export class TypeScriptParser implements ParserInterface {
         async: func.isAsync(),
         exported: func.isExported(),
         calls: filterCalls(this.extractCallExpressions(func)),
+        complexity: computeTSComplexity(func),
+        lineCount: computeTSLineCount(func),
+        nestingDepth: computeTSNestingDepth(func),
       });
     }
 
@@ -126,6 +139,9 @@ export class TypeScriptParser implements ParserInterface {
           async: init.isAsync(),
           exported: varDecl.isExported(),
           calls: filterCalls(this.extractCallExpressions(init)),
+          complexity: computeTSComplexity(init),
+          lineCount: computeTSLineCount(init),
+          nestingDepth: computeTSNestingDepth(init),
         });
       }
     }

@@ -15,6 +15,18 @@ import {
   ParamInfo,
   PropertyInfo,
 } from '../parser.interface';
+import {
+  computePyComplexity,
+  computePyLineCount,
+  computePyNestingDepth,
+  extractPyInstanceVarAccesses,
+} from './py-metrics';
+import {
+  findNodes,
+  findDirectChildren,
+  getChildText,
+  findAllDefinition,
+} from './tree-sitter-utils';
 
 // Lazy-loaded tree-sitter
 let Parser: any = null;
@@ -68,7 +80,7 @@ export class PythonParser implements ParserInterface {
 
   private extractClasses(rootNode: any, source: string): ClassInfo[] {
     const classes: ClassInfo[] = [];
-    const classNodes = this.findNodes(rootNode, 'class_definition');
+    const classNodes = findNodes(rootNode, 'class_definition');
 
     for (const node of classNodes) {
       // Skip nested classes (only process top-level)
@@ -77,7 +89,7 @@ export class PythonParser implements ParserInterface {
         if (grandparent?.type === 'class_definition') continue;
       }
 
-      const name = this.getChildText(node, 'identifier') || 'UnknownClass';
+      const name = getChildText(node, 'identifier') || 'UnknownClass';
 
       // Extract base classes
       const argList = node.childForFieldName('superclasses');
@@ -97,9 +109,9 @@ export class PythonParser implements ParserInterface {
       const properties: PropertyInfo[] = [];
 
       if (body) {
-        const funcNodes = this.findDirectChildren(body, 'function_definition');
+        const funcNodes = findDirectChildren(body, 'function_definition');
         for (const funcNode of funcNodes) {
-          const methodName = this.getChildText(funcNode, 'identifier') || 'unknown';
+          const methodName = getChildText(funcNode, 'identifier') || 'unknown';
           const params = this.extractParams(funcNode);
           const returnType = this.extractReturnType(funcNode, source);
           const methodDecorators = this.extractDecorators(funcNode);
@@ -127,11 +139,15 @@ export class PythonParser implements ParserInterface {
             async: funcNode.children.some((c: any) => c.type === 'async'),
             static: isStatic,
             calls: filterCalls(calls),
+            complexity: computePyComplexity(funcNode),
+            lineCount: computePyLineCount(funcNode),
+            nestingDepth: computePyNestingDepth(funcNode),
+            instanceVarAccesses: extractPyInstanceVarAccesses(funcNode),
           });
         }
 
         // Extract class-level assignments as properties
-        const assignments = this.findDirectChildren(body, 'expression_statement');
+        const assignments = findDirectChildren(body, 'expression_statement');
         for (const stmt of assignments) {
           const assignment = stmt.namedChildren.find((c: any) => c.type === 'assignment');
           if (assignment) {
@@ -148,7 +164,7 @@ export class PythonParser implements ParserInterface {
         }
 
         // Extract annotated assignments (type hints)
-        const annotatedAssigns = this.findDirectChildren(body, 'expression_statement');
+        const annotatedAssigns = findDirectChildren(body, 'expression_statement');
         for (const stmt of annotatedAssigns) {
           const typed = stmt.namedChildren.find(
             (c: any) => c.type === 'type' || c.type === 'annotated_assignment'
@@ -183,7 +199,7 @@ export class PythonParser implements ParserInterface {
             : node;
         if (!funcNode) continue;
 
-        const name = this.getChildText(funcNode, 'identifier') || 'unknown';
+        const name = getChildText(funcNode, 'identifier') || 'unknown';
         const params = this.extractParams(funcNode);
         const returnType = this.extractReturnType(funcNode, source);
         const calls = this.extractCallExpressions(funcNode);
@@ -199,6 +215,9 @@ export class PythonParser implements ParserInterface {
           async: isAsync,
           exported,
           calls: filterCalls(calls),
+          complexity: computePyComplexity(funcNode),
+          lineCount: computePyLineCount(funcNode),
+          nestingDepth: computePyNestingDepth(funcNode),
         });
       }
     }
@@ -210,7 +229,7 @@ export class PythonParser implements ParserInterface {
     const imports: ImportInfo[] = [];
 
     // "import x" and "import x as y"
-    const importStatements = this.findNodes(rootNode, 'import_statement');
+    const importStatements = findNodes(rootNode, 'import_statement');
     for (const node of importStatements) {
       const names = node.namedChildren.filter(
         (c: any) => c.type === 'dotted_name' || c.type === 'aliased_import'
@@ -230,7 +249,7 @@ export class PythonParser implements ParserInterface {
     }
 
     // "from x import y, z"
-    const fromImports = this.findNodes(rootNode, 'import_from_statement');
+    const fromImports = findNodes(rootNode, 'import_from_statement');
     for (const node of fromImports) {
       const moduleNode = node.childForFieldName('module_name');
       const moduleName = moduleNode?.text || '';
@@ -283,7 +302,7 @@ export class PythonParser implements ParserInterface {
     }
 
     // Check for __all__ definition
-    const allDef = this.findAllDefinition(rootNode, source);
+    const allDef = findAllDefinition(rootNode, source);
     if (allDef.length > 0) {
       // If __all__ is defined, only those are truly exported
       return allDef.map((name) => {
@@ -304,7 +323,7 @@ export class PythonParser implements ParserInterface {
     const types: TypeInfo[] = [];
 
     // Look for TypedDict, NamedTuple patterns
-    const assignments = this.findNodes(rootNode, 'assignment');
+    const assignments = findNodes(rootNode, 'assignment');
     for (const node of assignments) {
       const right = node.childForFieldName('right');
       if (right?.type === 'call') {
@@ -402,7 +421,7 @@ export class PythonParser implements ParserInterface {
 
   private extractCallExpressions(node: any): string[] {
     const calls: string[] = [];
-    const callNodes = this.findNodes(node, 'call');
+    const callNodes = findNodes(node, 'call');
 
     for (const callNode of callNodes) {
       const func = callNode.childForFieldName('function');
@@ -446,66 +465,4 @@ export class PythonParser implements ParserInterface {
     return decorators;
   }
 
-  private findAllDefinition(rootNode: any, source: string): string[] {
-    // Look for __all__ = ["x", "y", "z"]
-    const match = source.match(/__all__\s*=\s*\[([\s\S]*?)\]/);
-    if (!match) return [];
-
-    const names: string[] = [];
-    const entries = match[1].matchAll(/['"](\w+)['"]/g);
-    for (const entry of entries) {
-      names.push(entry[1]);
-    }
-    return names;
-  }
-
-  /** Find all descendant nodes of a given type */
-  private findNodes(node: any, type: string): any[] {
-    const results: any[] = [];
-    const cursor = node.walk();
-    let reachedRoot = false;
-
-    while (!reachedRoot) {
-      if (cursor.nodeType === type) {
-        results.push(cursor.currentNode);
-      }
-
-      if (cursor.gotoFirstChild()) continue;
-      if (cursor.gotoNextSibling()) continue;
-
-      let retracing = true;
-      while (retracing) {
-        if (!cursor.gotoParent()) {
-          retracing = false;
-          reachedRoot = true;
-        } else if (cursor.gotoNextSibling()) {
-          retracing = false;
-        }
-      }
-    }
-
-    return results;
-  }
-
-  /** Find direct children (not descendants) of a given type */
-  private findDirectChildren(node: any, type: string): any[] {
-    const results: any[] = [];
-    for (const child of node.namedChildren) {
-      if (child.type === type) {
-        results.push(child);
-      } else if (child.type === 'decorated_definition') {
-        const inner = child.namedChildren.find((c: any) => c.type === type);
-        if (inner) results.push(inner);
-      }
-    }
-    return results;
-  }
-
-  /** Get text of the first child with a given type */
-  private getChildText(node: any, type: string): string | null {
-    for (const child of node.namedChildren) {
-      if (child.type === type) return child.text;
-    }
-    return null;
-  }
 }

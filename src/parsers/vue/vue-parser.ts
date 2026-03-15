@@ -204,6 +204,9 @@ export class VueParser implements ParserInterface {
         async: code.slice(Math.max(0, match.index - 10), match.index).includes('async'),
         exported: code.slice(Math.max(0, match.index - 10), match.index).includes('export'),
         calls: templateComponents,
+        complexity: 1,
+        lineCount: 0,
+        nestingDepth: 0,
       });
     }
 
@@ -220,6 +223,9 @@ export class VueParser implements ParserInterface {
         async: code.slice(Math.max(0, match.index - 10), match.index + match[0].length).includes('async'),
         exported: code.slice(Math.max(0, match.index - 10), match.index).includes('export'),
         calls: [],
+        complexity: 1,
+        lineCount: 0,
+        nestingDepth: 0,
       });
     }
 
