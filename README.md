@@ -244,6 +244,7 @@ codemap ships with slash commands for Claude Code that orchestrate multi-step wo
 | `/codemap-impact` | Analyze blast radius before refactoring or modifying code |
 | `/codemap-plan` | Create an implementation plan grounded in actual code structure |
 | `/codemap-health-review` | Review code quality and identify what to refactor next |
+| `/codemap-refresh` | Regenerate codemap when source files have changed |
 
 Commands accept arguments after the name. For example:
 

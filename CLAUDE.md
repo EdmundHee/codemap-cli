@@ -12,6 +12,7 @@ impact analysis, and code exploration — they return structured context in a si
 - `/codemap-impact` — analyze blast radius before refactoring or modifying code
 - `/codemap-plan` — create an implementation plan grounded in actual code structure
 - `/codemap-health-review` — review code quality and identify what to refactor next
+- `/codemap-refresh` — regenerate codemap when source files have changed
 <!-- codemap:end -->
 
 ## Development
