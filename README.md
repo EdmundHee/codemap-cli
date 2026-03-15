@@ -36,14 +36,11 @@ One call instead of ten.
 ## Installation
 
 ```bash
-# Clone and build
-git clone https://github.com/EdmundHee/codemap-cli.git
-cd codemap-cli
-npm install
-npm run build
+# Install globally via npm
+npm install -g @gingerdev/codemap-cli
 
-# Make available globally
-npm link
+# Or install as a project dependency (auto-creates Claude Code commands)
+npm install @gingerdev/codemap-cli
 ```
 
 Requires Node.js >= 18.
@@ -236,6 +233,26 @@ For the config-based approach, add a `projects` array to `~/.codemaprc` or your 
 
 The `project` parameter is optional when only one project is registered. With multiple projects, Claude Code will select the right one based on context.
 
+### Claude Code Commands
+
+codemap ships with slash commands for Claude Code that orchestrate multi-step workflows using the MCP tools. These are created automatically in `.claude/commands/` when you run `codemap init`, `codemap generate`, or `npm install @gingerdev/codemap-cli`.
+
+| Command | Description |
+|---------|-------------|
+| `/codemap-explore` | Understand the project structure and architecture |
+| `/codemap-find-reusable` | Search for existing code to reuse before writing new functions |
+| `/codemap-impact` | Analyze blast radius before refactoring or modifying code |
+| `/codemap-plan` | Create an implementation plan grounded in actual code structure |
+| `/codemap-health-review` | Review code quality and identify what to refactor next |
+
+Commands accept arguments after the name. For example:
+
+```
+/codemap-find-reusable config parsing logic
+/codemap-impact UserService.validate
+/codemap-plan add WebSocket support
+```
+
 ## Language Support
 
 | Language | Parser | File Extensions | Features |
@@ -390,17 +407,6 @@ src/
     ├── logger.ts
     └── file-utils.ts
 ```
-
-## Roadmap
-
-- [x] `codemap diff` — detect changes since last generation
-- [x] `codemap analyze` — dead code detection, duplicate functions, circular dependencies
-- [x] `codemap health` — project health scoring with CI quality gates
-- [ ] Route extraction for Express, FastAPI, Django, Flask
-- [ ] Model/schema extraction for Prisma, SQLAlchemy, Mongoose
-- [ ] Middleware chain mapping
-- [ ] Incremental generation (only re-parse changed files)
-- [ ] Watch mode for auto-regeneration
 
 ## License
 
