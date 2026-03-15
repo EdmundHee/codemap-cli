@@ -1,32 +1,66 @@
-import { Command } from 'commander';
+#!/usr/bin/env node
+/**
+ * Postinstall hook — runs after `npm install codemap-cli`.
+ *
+ * Sets up .claude/commands/ in the consuming project so that
+ * /codemap-explore, /codemap-plan, etc. work in Claude Code immediately.
+ *
+ * Safety:
+ *  - Only runs when installed as a dependency (not during local dev)
+ *  - Never overwrites commands the user has customized (checks content hash)
+ *  - Silently exits on any error (postinstall failures shouldn't break installs)
+ */
+
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
-import { Logger } from '../../utils/logger';
-import { DEFAULT_CONFIG, detectIncludeDirs } from '../../core/config';
 
-const CLAUDE_MD_SECTION_START = '<!-- codemap:start -->';
-const CLAUDE_MD_SECTION_END = '<!-- codemap:end -->';
+// Detect the consuming project root.
+// When installed as a dependency, process.env.INIT_CWD is the project root
+// where `npm install` was run. Falls back to walking up from node_modules.
+function findProjectRoot(): string | null {
+  // INIT_CWD is set by npm/yarn/pnpm to the directory where install was run
+  if (process.env.INIT_CWD) {
+    return resolve(process.env.INIT_CWD);
+  }
 
-const CLAUDE_MD_CONTENT = `${CLAUDE_MD_SECTION_START}
-## Codemap
+  // Fallback: walk up from __dirname (which is inside node_modules)
+  // looking for a package.json that isn't ours
+  let dir = resolve(__dirname, '..', '..');
+  while (dir !== '/') {
+    const pkg = join(dir, 'package.json');
+    if (existsSync(pkg)) {
+      try {
+        const content = JSON.parse(readFileSync(pkg, 'utf-8'));
+        if (content.name !== '@gingerdev/codemap-cli') return dir;
+      } catch {
+        // ignore
+      }
+    }
+    dir = resolve(dir, '..');
+  }
 
-This project has a **codemap MCP server** with pre-indexed code structure, call graphs, and relationships.
-Always prefer \`codemap_*\` tools over grep/read for finding functions, understanding call relationships,
-impact analysis, and code exploration — they return structured context in a single call.
+  return null;
+}
 
-**Workflows** (use these for multi-step tasks):
+function isLocalDev(): boolean {
+  // Skip during local development (npm install in the codemap-cli repo itself)
+  try {
+    const pkg = join(process.cwd(), 'package.json');
+    if (existsSync(pkg)) {
+      const content = JSON.parse(readFileSync(pkg, 'utf-8'));
+      if (content.name === 'codemap-cli') return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
 
-- \`/codemap-explore\` — understand the project structure and architecture
-- \`/codemap-find-reusable\` — search for existing code to reuse before writing new functions
-- \`/codemap-impact\` — analyze blast radius before refactoring or modifying code
-- \`/codemap-plan\` — create an implementation plan grounded in actual code structure
-- \`/codemap-health-review\` — review code quality and identify what to refactor next
-${CLAUDE_MD_SECTION_END}`;
-
-// --- Claude Code command templates ---
-
-const CLAUDE_COMMANDS: Record<string, string> = {
-  'codemap-explore.md': `---
+// Command templates — keep in sync with init.ts CLAUDE_COMMANDS
+const COMMANDS: Record<string, { description: string; content: string }> = {
+  'codemap-explore.md': {
+    description: 'Explore and understand the project structure using codemap',
+    content: `---
 description: Explore and understand the project structure using codemap
 ---
 
@@ -43,8 +77,11 @@ If the user specified a focus area: $ARGUMENTS
 
 Present results as a concise architectural overview, not a raw data dump.
 `,
+  },
 
-  'codemap-find-reusable.md': `---
+  'codemap-find-reusable.md': {
+    description: 'Find existing functions to reuse or extend before writing new code',
+    content: `---
 description: Find existing functions to reuse or extend before writing new code
 ---
 
@@ -67,8 +104,11 @@ Then provide a recommendation for each match:
 
 Always prefer reuse over new code. If writing new code, suggest which module it should live in based on the existing structure.
 `,
+  },
 
-  'codemap-impact.md': `---
+  'codemap-impact.md': {
+    description: 'Analyze the blast radius before refactoring or modifying a function',
+    content: `---
 description: Analyze the blast radius before refactoring or modifying a function
 ---
 
@@ -91,8 +131,11 @@ Produce an impact report:
 - **Risk level**: Low (1-2 callers, same module) / Medium (3-10 callers, multiple modules) / High (10+ callers or public API)
 - **Suggested approach**: how to safely make the change (feature flag, deprecation, etc.)
 `,
+  },
 
-  'codemap-plan.md': `---
+  'codemap-plan.md': {
+    description: 'Create an implementation plan using codemap to understand the codebase first',
+    content: `---
 description: Create an implementation plan using codemap to understand the codebase first
 ---
 
@@ -115,8 +158,11 @@ Then produce a plan:
 - **Testing strategy**: what to test based on the call graph (which callers to verify)
 - **Risk areas**: modules with high complexity or coupling that need extra care
 `,
+  },
 
-  'codemap-health-review.md': `---
+  'codemap-health-review.md': {
+    description: 'Review code quality and identify what to refactor next',
+    content: `---
 description: Review code quality and identify what to refactor next
 ---
 
@@ -135,113 +181,42 @@ Produce a prioritized action list:
 - **Structural**: god classes or high-coupling modules that need architectural attention
 - **Overall assessment**: health score interpretation and trend direction
 `,
+  },
 };
 
-function updateClaudeMd(root: string, logger: Logger): void {
-  const claudeMdPath = join(root, 'CLAUDE.md');
+function main() {
+  // Don't run during local development
+  if (isLocalDev()) return;
 
-  if (existsSync(claudeMdPath)) {
-    const existing = readFileSync(claudeMdPath, 'utf-8');
+  const projectRoot = findProjectRoot();
+  if (!projectRoot) return;
 
-    // Check if codemap section already exists
-    if (existing.includes(CLAUDE_MD_SECTION_START)) {
-      // Replace existing section
-      const regex = new RegExp(
-        `${escapeRegex(CLAUDE_MD_SECTION_START)}[\\s\\S]*?${escapeRegex(CLAUDE_MD_SECTION_END)}`,
-        'g'
-      );
-      const updated = existing.replace(regex, CLAUDE_MD_CONTENT);
-      writeFileSync(claudeMdPath, updated);
-      logger.success('Updated codemap section in CLAUDE.md');
-    } else {
-      // Append section
-      const separator = existing.endsWith('\n') ? '\n' : '\n\n';
-      writeFileSync(claudeMdPath, existing + separator + CLAUDE_MD_CONTENT + '\n');
-      logger.success('Added codemap section to CLAUDE.md');
-    }
-  } else {
-    // Create new CLAUDE.md
-    writeFileSync(claudeMdPath, CLAUDE_MD_CONTENT + '\n');
-    logger.success('Created CLAUDE.md with codemap instructions');
-  }
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export function generateClaudeCommands(root: string, logger: Logger): void {
-  const commandsDir = join(root, '.claude', 'commands');
+  const commandsDir = join(projectRoot, '.claude', 'commands');
 
   try {
     mkdirSync(commandsDir, { recursive: true });
 
     let created = 0;
-    let updated = 0;
-    for (const [filename, content] of Object.entries(CLAUDE_COMMANDS)) {
+    for (const [filename, { content }] of Object.entries(COMMANDS)) {
       const filePath = join(commandsDir, filename);
-      if (existsSync(filePath)) {
-        const existing = readFileSync(filePath, 'utf-8');
-        if (existing === content) continue;
-        updated++;
-      } else {
-        created++;
-      }
+
+      // Don't overwrite if user has customized the file
+      if (existsSync(filePath)) continue;
+
       writeFileSync(filePath, content);
+      created++;
     }
 
-    if (created > 0 || updated > 0) {
-      const parts: string[] = [];
-      if (created > 0) parts.push(`created ${created}`);
-      if (updated > 0) parts.push(`updated ${updated}`);
-      logger.success(`Claude commands: ${parts.join(', ')} in .claude/commands/`);
-    } else {
-      logger.info('Claude commands already up to date');
+    if (created > 0) {
+      // Use stderr so it doesn't interfere with npm output
+      process.stderr.write(
+        `\n  codemap: created ${created} Claude Code commands in .claude/commands/\n`
+        + `  Available: /codemap-explore, /codemap-find-reusable, /codemap-impact, /codemap-plan, /codemap-health-review\n\n`
+      );
     }
-  } catch (error) {
-    logger.warn(`Could not create Claude commands: ${(error as Error).message}`);
+  } catch {
+    // Silently ignore — postinstall failures shouldn't break npm install
   }
 }
 
-export const initCommand = new Command('init')
-  .description('Create a .codemaprc config file in the current directory')
-  .option('-p, --path <path>', 'Directory to create config in', '.')
-  .option('--force', 'Overwrite existing config', false)
-  .option('--no-claude-md', 'Skip creating/updating CLAUDE.md')
-  .action(async (options) => {
-    const logger = new Logger();
-    const root = resolve(options.path);
-    const configPath = join(root, '.codemaprc');
-
-    if (existsSync(configPath) && !options.force) {
-      logger.warn('.codemaprc already exists. Use --force to overwrite.');
-      return;
-    }
-
-    try {
-      // Auto-detect include directories based on actual project structure
-      const detectedDirs = detectIncludeDirs(root);
-
-      // Write both include and exclude so users can see and customize both.
-      // When .codemaprc has an exclude list, loadConfig uses it as-is.
-      // Only falls back to defaults when no exclude field is present.
-      const config: Record<string, any> = {
-        include: detectedDirs,
-        exclude: [...DEFAULT_CONFIG.exclude],
-      };
-
-      writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
-      logger.success(`Created ${configPath}`);
-      logger.info(`Auto-detected include dirs: ${detectedDirs.join(', ')}`);
-      logger.info(`Default excludes written — customize as needed`);
-
-      // Create/update CLAUDE.md and Claude Code commands
-      if (options.claudeMd !== false) {
-        updateClaudeMd(root, logger);
-        generateClaudeCommands(root, logger);
-      }
-    } catch (error) {
-      logger.error(`Failed to create config: ${(error as Error).message}`);
-      process.exit(1);
-    }
-  });
+main();
