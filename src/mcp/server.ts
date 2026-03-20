@@ -48,6 +48,7 @@ import {
   formatHealthDiff,
 } from './formatters';
 import { computeTrend } from '../analyzers/history';
+import { UsageTracker } from './usage-tracker';
 
 // --- Multi-project registry ---
 
@@ -191,7 +192,30 @@ function mdResult(markdown: string) {
 
 // --- Tool registration ---
 
-function registerTools(server: McpServer, projects: ProjectEntry[], projectParam: any) {
+function registerTools(server: McpServer, projects: ProjectEntry[], projectParam: any, tracker: UsageTracker) {
+
+  /**
+   * Wrap a tool handler with usage tracking.
+   * Records start/end timing, error counts, and parameter frequency.
+   */
+  function tracked<P extends Record<string, unknown>>(
+    toolName: string,
+    handler: (params: P) => Promise<any>
+  ): (params: P) => Promise<any> {
+    return async (params: P) => {
+      const token = tracker.recordStart(toolName, params as Record<string, unknown>);
+      try {
+        const result = await handler(params);
+        const isError = result?.isError === true;
+        tracker.recordEnd(token, isError);
+        return result;
+      } catch (err) {
+        tracker.recordEnd(token, true);
+        throw err;
+      }
+    };
+  }
+
   // --- Tool: codemap_projects ---
   server.tool(
     'codemap_projects',
@@ -199,7 +223,7 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     + 'Use when you need to know which projects are available, check if codemap data exists, '
     + 'or discover project names for multi-project queries.',
     {},
-    async () => {
+    tracked('codemap_projects', async () => {
       const list = projects.map((p) => {
         const data = loadProjectData(p);
         return {
@@ -219,7 +243,7 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
         };
       });
       return mdResult(formatProjects(list));
-    }
+    })
   );
 
   // --- Tool: codemap_overview ---
@@ -231,11 +255,11 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     + 'unfamiliar repo. Returns the full project map in one call — much faster than reading files or '
     + 'running ls/find/glob across directories.',
     { project: projectParam },
-    async ({ project: projectName }) => {
+    tracked('codemap_overview', async ({ project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       return mdResult(formatOverview(getOverview(resolved.data)));
-    }
+    })
   );
 
   // --- Tool: codemap_module ---
@@ -249,13 +273,13 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       directory: z.string().describe('Directory path to query (e.g. "src/core", "backend/api", "lib/utils")'),
       project: projectParam,
     },
-    async ({ directory, project: projectName }) => {
+    tracked('codemap_module', async ({ directory, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const result = getModule(resolved.data, directory);
       if (!result) return errorResult(`Module "${directory}" not found.`);
       return mdResult(formatModule(result));
-    }
+    })
   );
 
   // --- Tool: codemap_query ---
@@ -271,7 +295,7 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       name: z.string().describe('Name to search for — supports partial/fuzzy matching (e.g. "createOrder", "User", "parse", "validate")'),
       project: projectParam,
     },
-    async ({ name, project: projectName }) => {
+    tracked('codemap_query', async ({ name, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const { data } = resolved;
@@ -298,7 +322,7 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       const results = search(data, name);
       if (results.length === 0) return mdResult(`No results for "${name}".`);
       return mdResult(formatSearchResults(results.map((r) => ({ type: r.type, name: r.name, file: r.file }))));
-    }
+    })
   );
 
   // --- Tool: codemap_callers ---
@@ -312,11 +336,11 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate", "parseConfig")'),
       project: projectParam,
     },
-    async ({ name, project: projectName }) => {
+    tracked('codemap_callers', async ({ name, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       return mdResult(formatCallers(getCallers(resolved.data, name)));
-    }
+    })
   );
 
   // --- Tool: codemap_calls ---
@@ -331,11 +355,11 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate", "buildReport")'),
       project: projectParam,
     },
-    async ({ name, project: projectName }) => {
+    tracked('codemap_calls', async ({ name, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       return mdResult(formatCalls(getCalls(resolved.data, name)));
-    }
+    })
   );
 
   // --- Tool: codemap_health ---
@@ -352,13 +376,13 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
         .describe('Optional scope to filter: module path (e.g. "src/core") or "project" for full report'),
       project: projectParam,
     },
-    async ({ scope, project: projectName }) => {
+    tracked('codemap_health', async ({ scope, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const { data } = resolved;
       if (!data.health) return errorResult('No health data. Regenerate codemap with latest version: `codemap generate`');
       return mdResult(formatHealth(data.health, data.module_metrics || [], scope));
-    }
+    })
   );
 
   // --- Tool: codemap_health_diff ---
@@ -370,14 +394,14 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     {
       project: projectParam,
     },
-    async ({ project: projectName }) => {
+    tracked('codemap_health_diff', async ({ project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const outputDir = join(resolved.project.root, '.codemap');
       const trend = computeTrend(outputDir);
       if (!trend) return mdResult('No history available. Run `codemap generate` at least twice to see trends.');
       return mdResult(formatHealthDiff(trend));
-    }
+    })
   );
 
   // --- Tool: codemap_structures ---
@@ -394,12 +418,30 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       target: z.string().optional().describe('Optional: specific class or function name to focus on'),
       project: projectParam,
     },
-    async ({ type, target, project: projectName }) => {
+    tracked('codemap_structures', async ({ type, target, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const { data } = resolved;
       return mdResult(formatStructures(data, type, target));
-    }
+    })
+  );
+
+  // --- Tool: codemap_usage ---
+  server.tool(
+    'codemap_usage',
+    'View MCP tool usage statistics: call counts, latency, error rates, and utilization '
+    + 'distribution across all codemap tools. Shows which tools are used most, performance '
+    + 'metrics, most queried parameters, and session history. Use to understand how the '
+    + 'codemap MCP server is being utilized.',
+    {
+      format: z.enum(['summary', 'json']).optional().describe('Output format: "summary" for markdown report (default), "json" for raw data'),
+    },
+    tracked('codemap_usage', async ({ format }) => {
+      if (format === 'json') {
+        return mdResult('```json\n' + JSON.stringify(tracker.getSnapshot(), null, 2) + '\n```');
+      }
+      return mdResult(tracker.getSummary());
+    })
   );
 }
 
@@ -407,6 +449,9 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
 
 async function main() {
   const projects = resolveProjects();
+
+  // Initialize usage tracker (persists to first project's .codemap/ dir)
+  const tracker = new UsageTracker(projects.map((p) => p.root));
 
   const server = new McpServer({
     name: 'codemap',
@@ -423,8 +468,8 @@ async function main() {
         : 'Project name (optional — defaults to the only registered project)'
     );
 
-  // Register all tools
-  registerTools(server, projects, projectParam);
+  // Register all tools (with usage tracking)
+  registerTools(server, projects, projectParam, tracker);
 
   // Connect via stdio transport
   const transport = new StdioServerTransport();
