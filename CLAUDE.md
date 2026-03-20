@@ -13,6 +13,11 @@ impact analysis, and code exploration — they return structured context in a si
 - `/codemap-plan` — create an implementation plan grounded in actual code structure
 - `/codemap-health-review` — review code quality and identify what to refactor next
 - `/codemap-refresh` — regenerate codemap when source files have changed
+- `/codemap-usage` — view MCP tool usage statistics with 5-hour interval breakdown
+
+**Auto-refresh**: After completing a code generation or significant code changes,
+run `/codemap-refresh` to keep the codemap in sync. This ensures call graphs,
+health scores, and all query results reflect the latest code.
 <!-- codemap:end -->
 
 ## Development

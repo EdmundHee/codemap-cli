@@ -22,6 +22,11 @@ impact analysis, and code exploration — they return structured context in a si
 - \`/codemap-plan\` — create an implementation plan grounded in actual code structure
 - \`/codemap-health-review\` — review code quality and identify what to refactor next
 - \`/codemap-refresh\` — regenerate codemap when source files have changed
+- \`/codemap-usage\` — view MCP tool usage statistics with 5-hour interval breakdown
+
+**Auto-refresh**: After completing a code generation or significant code changes,
+run \`/codemap-refresh\` to keep the codemap in sync. This ensures call graphs,
+health scores, and all query results reflect the latest code.
 ${CLAUDE_MD_SECTION_END}`;
 
 // --- Claude Code command templates ---
@@ -154,6 +159,27 @@ Steps:
 4. If the user specified a scope ($ARGUMENTS), also run \`codemap_health\` scoped to that module to show details
 
 Report what changed: how many files were re-parsed, the new health score, and whether the score improved or degraded compared to the previous run.
+`,
+
+  'codemap-usage.md': `---
+description: View MCP tool usage statistics with 5-hour interval breakdown
+---
+
+Show codemap MCP usage statistics to understand how the tools are being utilized.
+
+Steps:
+1. Call \`codemap_usage\` with format "summary" to get the full usage report
+2. Highlight the key insights:
+   - Which tools are used most and least
+   - The 5-hour interval breakdown showing usage patterns over time
+   - Any tools with high error rates that may need attention
+   - Most frequently queried parameters (shows which parts of the codebase get the most AI attention)
+3. If the user specified a focus ($ARGUMENTS), filter or emphasize that aspect:
+   - "json" → call \`codemap_usage\` with format "json" instead
+   - A tool name → highlight stats for that specific tool
+   - "today" or a date → focus on intervals for that day
+
+Present the data clearly — don't just dump the raw output. Summarize trends and actionable insights.
 `,
 };
 
