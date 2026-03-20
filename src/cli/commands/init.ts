@@ -3,6 +3,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { Logger } from '../../utils/logger';
 import { DEFAULT_CONFIG, detectIncludeDirs } from '../../core/config';
+import { setupHooks } from './hooks';
 
 const CLAUDE_MD_SECTION_START = '<!-- codemap:start -->';
 const CLAUDE_MD_SECTION_END = '<!-- codemap:end -->';
@@ -254,6 +255,7 @@ export const initCommand = new Command('init')
   .option('-p, --path <path>', 'Directory to create config in', '.')
   .option('--force', 'Overwrite existing config', false)
   .option('--no-claude-md', 'Skip creating/updating CLAUDE.md')
+  .option('--no-hooks', 'Skip setting up Claude Code hooks')
   .action(async (options) => {
     const logger = new Logger();
     const root = resolve(options.path);
@@ -285,6 +287,11 @@ export const initCommand = new Command('init')
       if (options.claudeMd !== false) {
         updateClaudeMd(root, logger);
         generateClaudeCommands(root, logger);
+      }
+
+      // Set up Claude Code hooks for auto-refresh
+      if (options.hooks !== false) {
+        setupHooks(root, logger);
       }
     } catch (error) {
       logger.error(`Failed to create config: ${(error as Error).message}`);

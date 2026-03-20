@@ -10,6 +10,7 @@ import { analyzeCommand } from './commands/analyze';
 import { queryCommand } from './commands/query';
 import { checkCommand } from './commands/check';
 import { healthCommand } from './commands/health';
+import { hooksCommand } from './commands/hooks';
 
 // Read version from package.json so it stays in sync with npm version
 let version = '0.0.0';
@@ -48,5 +49,6 @@ program.addCommand(analyzeCommand);
 program.addCommand(queryCommand);
 program.addCommand(checkCommand);
 program.addCommand(healthCommand);
+program.addCommand(hooksCommand);
 
 program.parse(process.argv);
