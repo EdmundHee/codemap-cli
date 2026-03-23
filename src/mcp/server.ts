@@ -48,7 +48,7 @@ import {
   formatHealthDiff,
 } from './formatters';
 import { computeTrend } from '../analyzers/history';
-import { UsageTracker } from './usage-tracker';
+import { UsageTracker, computeResponseBytes } from './usage-tracker';
 
 // --- Multi-project registry ---
 
@@ -207,10 +207,11 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       try {
         const result = await handler(params);
         const isError = result?.isError === true;
-        tracker.recordEnd(token, isError);
+        const responseBytes = computeResponseBytes(result);
+        tracker.recordEnd(token, isError, responseBytes);
         return result;
       } catch (err) {
-        tracker.recordEnd(token, true);
+        tracker.recordEnd(token, true, 0);
         throw err;
       }
     };

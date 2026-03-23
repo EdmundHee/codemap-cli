@@ -22,6 +22,11 @@ export interface ToolMetrics {
   firstCalledAt: string | null;
   /** Track which parameter values are used most often (top-level string params only) */
   paramFrequency: Record<string, Record<string, number>>;
+  /** Response size tracking (bytes) */
+  totalResponseBytes: number;
+  avgResponseBytes: number;
+  minResponseBytes: number;
+  maxResponseBytes: number;
 }
 
 export interface UsageSnapshot {
@@ -77,6 +82,10 @@ function newToolMetrics(): ToolMetrics {
     lastCalledAt: null,
     firstCalledAt: null,
     paramFrequency: {},
+    totalResponseBytes: 0,
+    avgResponseBytes: 0,
+    minResponseBytes: Infinity,
+    maxResponseBytes: 0,
   };
 }
 
@@ -91,6 +100,15 @@ function newSnapshot(): UsageSnapshot {
     sessions: [],
     intervals: {},
   };
+}
+
+/** Format bytes into a human-readable string */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, i);
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
 }
 
 /** 5-hour interval boundaries (hours) */
@@ -148,6 +166,7 @@ export class UsageTracker {
   private snapshot: UsageSnapshot;
   private persistPath: string | null = null;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private debouncedFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private dirty = false;
   private currentSession: SessionEntry;
 
@@ -172,15 +191,16 @@ export class UsageTracker {
     this.snapshot.sessions.push(this.currentSession);
     this.snapshot.serverStartedAt = this.currentSession.startedAt;
 
-    // Auto-flush every 30 seconds if there are changes
+    // Auto-flush every 5 seconds if there are changes
     this.flushTimer = setInterval(() => {
       if (this.dirty) this.flush();
-    }, 30_000);
+    }, 5_000);
 
-    // Flush on exit
+    // Flush on exit — must call process.exit() to actually terminate
+    // since registering signal handlers suppresses Node's default behavior
     process.on('beforeExit', () => this.shutdown());
-    process.on('SIGINT', () => this.shutdown());
-    process.on('SIGTERM', () => this.shutdown());
+    process.on('SIGINT', () => { this.shutdown(); process.exit(0); });
+    process.on('SIGTERM', () => { this.shutdown(); process.exit(0); });
   }
 
   /**
@@ -206,8 +226,9 @@ export class UsageTracker {
 
   /**
    * Record the end of a tool invocation.
+   * @param responseBytes — byte size of the serialized response (use computeResponseBytes())
    */
-  recordEnd(token: InvocationToken, isError = false): void {
+  recordEnd(token: InvocationToken, isError = false, responseBytes = 0): void {
     const elapsed = Date.now() - token.startMs;
     const metrics = this.ensureTool(token.toolName);
     const now = new Date().toISOString();
@@ -219,6 +240,14 @@ export class UsageTracker {
     metrics.maxLatencyMs = Math.max(metrics.maxLatencyMs, elapsed);
     metrics.lastCalledAt = now;
     if (!metrics.firstCalledAt) metrics.firstCalledAt = now;
+
+    // Response size tracking
+    if (responseBytes > 0) {
+      metrics.totalResponseBytes += responseBytes;
+      metrics.avgResponseBytes = Math.round(metrics.totalResponseBytes / metrics.callCount);
+      metrics.minResponseBytes = Math.min(metrics.minResponseBytes, responseBytes);
+      metrics.maxResponseBytes = Math.max(metrics.maxResponseBytes, responseBytes);
+    }
 
     if (isError) {
       metrics.errorCount++;
@@ -254,6 +283,10 @@ export class UsageTracker {
     }
 
     this.dirty = true;
+
+    // Debounced flush: write within 2 seconds of each call to prevent data loss
+    if (this.debouncedFlushTimer) clearTimeout(this.debouncedFlushTimer);
+    this.debouncedFlushTimer = setTimeout(() => this.flush(), 2_000);
   }
 
   /**
@@ -261,12 +294,9 @@ export class UsageTracker {
    */
   getSnapshot(): UsageSnapshot {
     // Fix up Infinity for serialization
-    const snapshot = JSON.parse(JSON.stringify(this.snapshot));
-    for (const tool of Object.values(snapshot.tools) as ToolMetrics[]) {
-      if (tool.minLatencyMs === null || !isFinite(tool.minLatencyMs)) {
-        tool.minLatencyMs = 0;
-      }
-    }
+    const snapshot = JSON.parse(JSON.stringify(this.snapshot, (_key, value) =>
+      value === Infinity ? 0 : value
+    ));
     return snapshot;
   }
 
@@ -294,13 +324,15 @@ export class UsageTracker {
     }
 
     lines.push('## Tool Utilization\n');
-    lines.push('| Tool | Calls | Errors | Avg Latency | Min | Max | Last Used |');
-    lines.push('|------|------:|-------:|------------:|----:|----:|-----------|');
+    lines.push('| Tool | Calls | Errors | Avg Latency | Min | Max | Avg Response | Total Response | Last Used |');
+    lines.push('|------|------:|-------:|------------:|----:|----:|-------------:|---------------:|-----------|');
 
     for (const [name, m] of tools) {
       const min = isFinite(m.minLatencyMs) ? `${m.minLatencyMs}ms` : '-';
+      const avgResp = m.totalResponseBytes > 0 ? formatBytes(m.avgResponseBytes) : '-';
+      const totalResp = m.totalResponseBytes > 0 ? formatBytes(m.totalResponseBytes) : '-';
       lines.push(
-        `| ${name} | ${m.callCount} | ${m.errorCount} | ${m.avgLatencyMs}ms | ${min} | ${m.maxLatencyMs}ms | ${m.lastCalledAt ? new Date(m.lastCalledAt).toLocaleString() : '-'} |`
+        `| ${name} | ${m.callCount} | ${m.errorCount} | ${m.avgLatencyMs}ms | ${min} | ${m.maxLatencyMs}ms | ${avgResp} | ${totalResp} | ${m.lastCalledAt ? new Date(m.lastCalledAt).toLocaleString() : '-'} |`
       );
     }
 
@@ -414,6 +446,15 @@ export class UsageTracker {
         this.snapshot = raw;
         // Migrate: ensure intervals exists (added in v1.1)
         if (!this.snapshot.intervals) this.snapshot.intervals = {};
+        // Migrate: ensure response byte fields exist on old tool metrics
+        for (const tool of Object.values(this.snapshot.tools)) {
+          if (tool.totalResponseBytes === undefined) {
+            tool.totalResponseBytes = 0;
+            tool.avgResponseBytes = 0;
+            tool.minResponseBytes = 0;
+            tool.maxResponseBytes = 0;
+          }
+        }
         // Keep max 50 sessions to avoid unbounded growth
         if (this.snapshot.sessions.length > 50) {
           this.snapshot.sessions = this.snapshot.sessions.slice(-50);
@@ -438,21 +479,46 @@ export class UsageTracker {
 
       this.snapshot.lastFlushedAt = new Date().toISOString();
       this.currentSession.endedAt = new Date().toISOString();
-      writeFileSync(this.persistPath, JSON.stringify(this.snapshot, null, 2));
+
+      // Replace Infinity with 0 for JSON serialization
+      const serializable = JSON.stringify(this.snapshot, (_key, value) =>
+        value === Infinity ? 0 : value
+      , 2);
+      writeFileSync(this.persistPath, serializable);
       this.dirty = false;
-    } catch {
-      // Silently ignore write failures (read-only filesystem, etc.)
+    } catch (err) {
+      // Log write failures to stderr so they're visible in MCP server logs
+      process.stderr.write(`[codemap] usage-stats flush failed: ${err}\n`);
     }
+  }
+
+  /**
+   * Clean up timers without flushing. Use in tests to prevent Jest from hanging.
+   */
+  destroy(): void {
+    if (this.debouncedFlushTimer) clearTimeout(this.debouncedFlushTimer);
+    if (this.flushTimer) clearInterval(this.flushTimer);
+    this.debouncedFlushTimer = null;
+    this.flushTimer = null;
   }
 
   private shutdown(): void {
     this.currentSession.endedAt = new Date().toISOString();
+    this.destroy();
     this.flush();
-    if (this.flushTimer) clearInterval(this.flushTimer);
   }
 }
 
 export interface InvocationToken {
   toolName: string;
   startMs: number;
+}
+
+/** Compute the byte size of a JSON-serializable value */
+export function computeResponseBytes(result: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(result), 'utf-8');
+  } catch {
+    return 0;
+  }
 }
