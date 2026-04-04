@@ -42,6 +42,24 @@ export function getOverview(data: CodemapData): any {
     if (modules[dir]) modules[dir].types++;
   }
 
+  // Framework enrichment summary
+  const framework_data: any = {};
+  if (data.routes?.length > 0) framework_data.routes = data.routes.length;
+  if (data.models && Object.keys(data.models).length > 0) {
+    framework_data.models = Object.keys(data.models).length;
+  }
+  if (data.middleware && Object.keys(data.middleware).length > 0) {
+    framework_data.middleware = Object.keys(data.middleware).length;
+  }
+  const extData = data as any;
+  if (extData.signals?.length > 0) framework_data.signals = extData.signals.length;
+  if (extData.admin?.length > 0) framework_data.admin_registrations = extData.admin.length;
+  if (extData.forms?.length > 0) framework_data.forms = extData.forms.length;
+  if (extData.di_providers?.length > 0) framework_data.dependency_providers = extData.di_providers.length;
+  if (extData.plugins?.length > 0) framework_data.plugins = extData.plugins.length;
+  if (extData.layouts?.length > 0) framework_data.layouts = extData.layouts.length;
+  if (extData.components?.length > 0) framework_data.components = extData.components.length;
+
   return {
     project: data.project.name,
     languages: data.project.languages,
@@ -55,6 +73,7 @@ export function getOverview(data: CodemapData): any {
     },
     modules,
     dependencies: data.dependencies,
+    ...(Object.keys(framework_data).length > 0 ? { framework_data } : {}),
   };
 }
 
@@ -167,6 +186,29 @@ export function search(data: CodemapData, term: string): QueryResult[] {
     }
   }
 
+  // Search routes
+  for (const route of (data.routes || []) as any[]) {
+    if (
+      route.handler?.toLowerCase().includes(lowerTerm) ||
+      route.path?.toLowerCase().includes(lowerTerm)
+    ) {
+      const methods = Array.isArray(route.method) ? route.method.join(',') : route.method;
+      results.push({
+        type: 'function',
+        name: `[${methods}] ${route.path} → ${route.handler}`,
+        file: route.file,
+        data: route,
+      });
+    }
+  }
+
+  // Search models
+  for (const [name, model] of Object.entries(data.models || {}) as [string, any][]) {
+    if (name.toLowerCase().includes(lowerTerm)) {
+      results.push({ type: 'class', name: `${model.kind}: ${name}`, file: model.file, data: model });
+    }
+  }
+
   return results;
 }
 
@@ -274,4 +316,118 @@ export function getType(data: CodemapData, name: string): QueryResult | null {
   const type = data.types[name];
   if (!type) return null;
   return { type: 'type', name, file: type.file, data: type };
+}
+
+// ─── Framework-specific queries ────────────────────────────────────────────
+
+/**
+ * Get all routes, optionally filtered by method, path, or framework.
+ */
+export function getRoutes(
+  data: CodemapData,
+  filter?: { method?: string; path?: string; framework?: string }
+): any[] {
+  let routes = data.routes || [];
+
+  if (filter?.method) {
+    const m = filter.method.toUpperCase();
+    routes = routes.filter((r: any) => {
+      const methods = Array.isArray(r.method) ? r.method : [r.method];
+      return methods.some((rm: string) => rm.toUpperCase() === m || rm === 'ALL');
+    });
+  }
+
+  if (filter?.path) {
+    const p = filter.path.toLowerCase();
+    routes = routes.filter((r: any) => r.path?.toLowerCase().includes(p));
+  }
+
+  if (filter?.framework) {
+    routes = routes.filter((r: any) => r.framework === filter.framework);
+  }
+
+  return routes;
+}
+
+/**
+ * Get all models, optionally filtered by framework or kind.
+ */
+export function getModels(
+  data: CodemapData,
+  filter?: { framework?: string; kind?: string }
+): any[] {
+  const models = Object.entries(data.models || {}).map(([name, model]: [string, any]) => ({
+    name,
+    ...model,
+  }));
+
+  let filtered = models;
+
+  if (filter?.framework) {
+    filtered = filtered.filter((m) => m.framework === filter.framework);
+  }
+
+  if (filter?.kind) {
+    filtered = filtered.filter((m) => m.kind === filter.kind);
+  }
+
+  return filtered;
+}
+
+/**
+ * Get all middleware entries, optionally filtered by framework.
+ */
+export function getMiddleware(
+  data: CodemapData,
+  filter?: { framework?: string }
+): any[] {
+  const mws = Object.entries(data.middleware || {}).map(([key, mw]: [string, any]) => ({
+    key,
+    ...mw,
+  }));
+
+  if (filter?.framework) {
+    return mws.filter((m) => m.framework === filter.framework);
+  }
+
+  return mws;
+}
+
+/**
+ * Get complete framework data summary for a specific framework.
+ */
+export function getFrameworkData(data: CodemapData, framework: string): any {
+  const extData = data as any;
+  const result: any = {
+    framework,
+    routes: (data.routes || []).filter((r: any) => r.framework === framework),
+    models: Object.entries(data.models || {})
+      .filter(([, m]: [string, any]) => m.framework === framework)
+      .map(([name, m]) => ({ name, ...m as any })),
+    middleware: Object.entries(data.middleware || {})
+      .filter(([, m]: [string, any]) => m.framework === framework)
+      .map(([key, m]) => ({ key, ...m as any })),
+  };
+
+  // Add framework-specific extras
+  if (framework === 'django') {
+    if (extData.signals?.length) result.signals = extData.signals.filter((s: any) => s.framework === 'django');
+    if (extData.admin?.length) result.admin = extData.admin;
+    if (extData.forms?.length) result.forms = extData.forms;
+    if (extData.management_commands?.length) result.management_commands = extData.management_commands;
+    if (extData.template_tags?.length) result.template_tags = extData.template_tags;
+  }
+
+  if (framework === 'fastapi') {
+    if (extData.di_providers?.length) result.di_providers = extData.di_providers;
+    if (extData.security_schemes?.length) result.security_schemes = extData.security_schemes;
+  }
+
+  if (framework === 'nuxt') {
+    if (extData.plugins?.length) result.plugins = extData.plugins;
+    if (extData.layouts?.length) result.layouts = extData.layouts;
+    if (extData.components?.length) result.components = extData.components;
+  }
+
+  return result;
 }

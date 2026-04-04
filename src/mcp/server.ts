@@ -33,6 +33,10 @@ import {
   getClass,
   getFile,
   getType,
+  getRoutes,
+  getModels,
+  getMiddleware,
+  getFrameworkData,
   QueryResult,
 } from '../core/query-engine';
 import {
@@ -46,6 +50,7 @@ import {
   formatHealth,
   formatStructures,
   formatHealthDiff,
+  formatFrameworkData,
 } from './formatters';
 import { computeTrend } from '../analyzers/history';
 import { UsageTracker, computeResponseBytes } from './usage-tracker';
@@ -424,6 +429,110 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       if ('error' in resolved) return errorResult(resolved.error);
       const { data } = resolved;
       return mdResult(formatStructures(data, type, target));
+    })
+  );
+
+  // --- Tool: codemap_framework ---
+  server.tool(
+    'codemap_framework',
+    'Get framework-specific data extracted by enrichers: routes (URL patterns and API endpoints), '
+    + 'models (Django models, Pydantic schemas, Nuxt composables), middleware, signals, admin '
+    + 'registrations, forms, dependency injection chains, plugins, layouts, and components. '
+    + 'Use when working with Django, FastAPI, or Nuxt projects to understand framework-level '
+    + 'structure: "what routes exist?", "what models are defined?", "what middleware runs?", '
+    + '"what signals are connected?". Supports filtering by framework name.',
+    {
+      framework: z
+        .string()
+        .optional()
+        .describe('Filter by framework: "django", "fastapi", or "nuxt". Omit to get all.'),
+      entity: z
+        .enum(['routes', 'models', 'middleware', 'all'])
+        .optional()
+        .describe('Which entity type to return. Default: "all"'),
+      filter: z
+        .string()
+        .optional()
+        .describe('Optional filter: for routes, filter by path pattern; for models, filter by name'),
+      project: projectParam,
+    },
+    tracked('codemap_framework', async ({ framework, entity, filter, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const { data } = resolved;
+
+      // If specific framework requested, get complete framework view
+      if (framework && (!entity || entity === 'all')) {
+        const fwData = getFrameworkData(data, framework);
+        if (!fwData.routes.length && !fwData.models.length && !fwData.middleware.length) {
+          return mdResult(`No enriched data found for framework "${framework}". Make sure to regenerate: \`codemap generate\``);
+        }
+        return mdResult(formatFrameworkData(fwData));
+      }
+
+      // Entity-specific queries
+      const entityType = entity || 'all';
+      const lines: string[] = [];
+
+      if (entityType === 'routes' || entityType === 'all') {
+        const routes = getRoutes(data, {
+          framework: framework,
+          path: filter,
+        });
+        if (routes.length > 0) {
+          lines.push(`## Routes (${routes.length})\n`);
+          for (const r of routes) {
+            const methods = Array.isArray(r.method) ? r.method.join(',') : r.method;
+            const auth = r.auth ? ` [auth: ${r.auth.join(', ')}]` : '';
+            const tags = r.tags ? ` [tags: ${r.tags.join(', ')}]` : '';
+            lines.push(`${methods} ${r.path} → ${r.handler}${auth}${tags} [${r.file}]`);
+          }
+          lines.push('');
+        }
+      }
+
+      if (entityType === 'models' || entityType === 'all') {
+        const models = getModels(data, { framework });
+        const filtered = filter
+          ? models.filter((m) => m.name.toLowerCase().includes(filter.toLowerCase()))
+          : models;
+        if (filtered.length > 0) {
+          lines.push(`## Models (${filtered.length})\n`);
+          for (const m of filtered) {
+            lines.push(`**${m.kind}: ${m.name}** [${m.file}]`);
+            if (m.fields?.length) {
+              const fieldStrs = m.fields.map((f: any) => {
+                const rel = f.relationship ? ` → ${f.related_model || '?'}` : '';
+                const req = f.required ? '' : '?';
+                return `${f.name}${req}: ${f.type}${rel}`;
+              });
+              lines.push(`  fields: ${fieldStrs.join(', ')}`);
+            }
+            if (m.relationships?.length) {
+              lines.push(`  refs: ${m.relationships.join(', ')}`);
+            }
+          }
+          lines.push('');
+        }
+      }
+
+      if (entityType === 'middleware' || entityType === 'all') {
+        const mws = getMiddleware(data, { framework });
+        if (mws.length > 0) {
+          lines.push(`## Middleware (${mws.length})\n`);
+          for (const mw of mws) {
+            const methods = mw.methods?.length ? ` [${mw.methods.join(', ')}]` : '';
+            lines.push(`${mw.type}: ${mw.name}${methods} [${mw.file}]`);
+          }
+          lines.push('');
+        }
+      }
+
+      if (lines.length === 0) {
+        return mdResult('No framework data found. Run `codemap generate` to populate.');
+      }
+
+      return mdResult(lines.join('\n'));
     })
   );
 

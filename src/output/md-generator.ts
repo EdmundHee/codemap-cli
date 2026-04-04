@@ -173,6 +173,183 @@ function generateEnvSection(data: CodemapData): string[] {
 }
 
 /**
+ * Helper: Generate ROUTES section (from framework enrichers).
+ */
+function generateRoutesSection(data: CodemapData): string[] {
+  const lines: string[] = [];
+  if (!data.routes || data.routes.length === 0) return lines;
+
+  lines.push('## ROUTES');
+  for (const route of data.routes) {
+    const methods = Array.isArray(route.method) ? route.method.join(',') : route.method;
+    const auth = route.auth ? ` [auth: ${route.auth.join(', ')}]` : '';
+    const framework = route.framework ? ` (${route.framework})` : '';
+    lines.push(`${methods} ${route.path} → ${route.handler}${auth}${framework} [${route.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate MODELS section (from framework enrichers).
+ */
+function generateModelsSection(data: CodemapData): string[] {
+  const lines: string[] = [];
+  if (!data.models || Object.keys(data.models).length === 0) return lines;
+
+  lines.push('## MODELS');
+  for (const [name, model] of Object.entries(data.models) as [string, any][]) {
+    const kind = model.kind || 'model';
+    const framework = model.framework ? ` (${model.framework})` : '';
+    const ext = model.extends ? ` extends ${model.extends}` : '';
+    lines.push(`${kind}: ${name}${ext}${framework} [${model.file}]`);
+
+    // Show fields (compact)
+    if (model.fields?.length > 0) {
+      const fieldStrs = model.fields
+        .slice(0, 10)
+        .map((f: any) => {
+          const rel = f.relationship ? ` → ${f.related_model || '?'}` : '';
+          return `${f.name}: ${f.type}${rel}`;
+        });
+      const extra = model.fields.length > 10 ? ` ... +${model.fields.length - 10} more` : '';
+      lines.push(`  fields: ${fieldStrs.join(', ')}${extra}`);
+    }
+
+    // Show relationships
+    if (model.relationships?.length > 0) {
+      lines.push(`  refs: ${model.relationships.join(', ')}`);
+    }
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate MIDDLEWARE section (from framework enrichers).
+ */
+function generateMiddlewareSection(data: CodemapData): string[] {
+  const lines: string[] = [];
+  if (!data.middleware || Object.keys(data.middleware).length === 0) return lines;
+
+  lines.push('## MIDDLEWARE');
+  for (const [name, mw] of Object.entries(data.middleware) as [string, any][]) {
+    const type = mw.type || 'middleware';
+    const framework = mw.framework ? ` (${mw.framework})` : '';
+    const methods = mw.methods?.length > 0 ? ` [${mw.methods.join(', ')}]` : '';
+    const global = mw.global ? ' [global]' : '';
+    lines.push(`${type}: ${mw.name || name}${methods}${global}${framework} [${mw.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate framework-specific extras (signals, admin, forms, plugins, etc.).
+ */
+function generateFrameworkExtrasSection(data: CodemapData): string[] {
+  const lines: string[] = [];
+  const extData = data as any;
+
+  // Django signals
+  if (extData.signals?.length > 0) {
+    lines.push('## SIGNALS');
+    for (const signal of extData.signals) {
+      const sender = signal.sender ? ` (sender: ${signal.sender})` : '';
+      lines.push(`${signal.signal} → ${signal.receiver}${sender} [${signal.file}]`);
+    }
+    lines.push('');
+  }
+
+  // Django admin registrations
+  if (extData.admin?.length > 0) {
+    lines.push('## ADMIN');
+    for (const admin of extData.admin) {
+      const model = admin.model ? ` → ${admin.model}` : '';
+      lines.push(`${admin.admin_class}${model} [${admin.file}]`);
+    }
+    lines.push('');
+  }
+
+  // Django forms
+  if (extData.forms?.length > 0) {
+    lines.push('## FORMS');
+    for (const form of extData.forms) {
+      const model = form.model ? ` (model: ${form.model})` : '';
+      const validators = form.validators?.length > 0 ? ` [validators: ${form.validators.join(', ')}]` : '';
+      lines.push(`${form.kind}: ${form.name}${model}${validators} [${form.file}]`);
+    }
+    lines.push('');
+  }
+
+  // Django management commands
+  if (extData.management_commands?.length > 0) {
+    lines.push('## MANAGEMENT_COMMANDS');
+    for (const cmd of extData.management_commands) {
+      const help = cmd.help ? ` — ${cmd.help}` : '';
+      lines.push(`${cmd.name}${help} [${cmd.file}]`);
+    }
+    lines.push('');
+  }
+
+  // Django template tags
+  if (extData.template_tags?.length > 0) {
+    lines.push('## TEMPLATE_TAGS');
+    for (const tag of extData.template_tags) {
+      lines.push(`${tag.kind}: ${tag.name} → ${tag.handler} [${tag.file}]`);
+    }
+    lines.push('');
+  }
+
+  // FastAPI dependencies
+  if (extData.di_providers?.length > 0) {
+    lines.push('## DEPENDENCIES (DI)');
+    for (const dep of extData.di_providers) {
+      const subDeps = dep.depends_on?.length > 0 ? ` ← ${dep.depends_on.join(', ')}` : '';
+      const usedBy = dep.used_by?.length > 0 ? ` → ${dep.used_by.join(', ')}` : '';
+      lines.push(`${dep.name}: ${dep.return_type}${subDeps}${usedBy} [${dep.file}]`);
+    }
+    lines.push('');
+  }
+
+  // Nuxt plugins
+  if (extData.plugins?.length > 0) {
+    lines.push('## PLUGINS');
+    for (const plugin of extData.plugins) {
+      const mode = plugin.mode ? ` [${plugin.mode}]` : '';
+      const provides = plugin.provides?.length > 0 ? ` provides: ${plugin.provides.join(', ')}` : '';
+      lines.push(`${plugin.name}${mode}${provides} [${plugin.file}]`);
+    }
+    lines.push('');
+  }
+
+  // Nuxt layouts
+  if (extData.layouts?.length > 0) {
+    lines.push('## LAYOUTS');
+    for (const layout of extData.layouts) {
+      const usedBy = layout.used_by?.length > 0 ? ` → ${layout.used_by.length} pages` : '';
+      lines.push(`${layout.name}${usedBy} [${layout.file}]`);
+    }
+    lines.push('');
+  }
+
+  // Nuxt components
+  if (extData.components?.length > 0) {
+    lines.push('## COMPONENTS');
+    const compNames = extData.components.map((c: any) => c.name);
+    if (compNames.length <= 20) {
+      lines.push(compNames.join(', '));
+    } else {
+      const shown = compNames.slice(0, 15).join(', ');
+      lines.push(`${shown} ... +${compNames.length - 15} more`);
+    }
+    lines.push('');
+  }
+
+  return lines;
+}
+
+/**
  * Generate a COMPACT root-level summary.
  * Target: ~1500-2500 lines even for 5000+ file projects.
  *
@@ -215,6 +392,10 @@ export function generateMarkdown(data: CodemapData): string {
   if (classCount > 0) lines.push(...generateClassesSection(sortedDirs));
   if (funcCount > 0) lines.push(...generateFunctionsSection(sortedDirs));
   if (typeCount > 0) lines.push(...generateTypesSection(sortedDirs));
+  lines.push(...generateRoutesSection(data));
+  lines.push(...generateModelsSection(data));
+  lines.push(...generateMiddlewareSection(data));
+  lines.push(...generateFrameworkExtrasSection(data));
   lines.push(...generateDepsSection(data));
   lines.push(...generateEnvSection(data));
 
