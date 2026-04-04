@@ -90,89 +90,11 @@ export class PythonParser implements ParserInterface {
       }
 
       const name = getChildText(node, 'identifier') || 'UnknownClass';
-
-      // Extract base classes
-      const argList = node.childForFieldName('superclasses');
-      const baseClasses: string[] = [];
-      if (argList) {
-        for (const child of argList.namedChildren) {
-          baseClasses.push(child.text);
-        }
-      }
-
-      // Extract decorators
+      const baseClasses = this.extractBaseClasses(node);
       const decorators = this.extractDecorators(node);
-
-      // Extract methods
       const body = node.childForFieldName('body');
-      const methods: MethodInfo[] = [];
-      const properties: PropertyInfo[] = [];
-
-      if (body) {
-        const funcNodes = findDirectChildren(body, 'function_definition');
-        for (const funcNode of funcNodes) {
-          const methodName = getChildText(funcNode, 'identifier') || 'unknown';
-          const params = this.extractParams(funcNode);
-          const returnType = this.extractReturnType(funcNode, source);
-          const methodDecorators = this.extractDecorators(funcNode);
-          const calls = this.extractCallExpressions(funcNode);
-
-          // Determine access from name convention
-          let access: 'public' | 'private' | 'protected' = 'public';
-          if (methodName.startsWith('__') && !methodName.endsWith('__')) {
-            access = 'private';
-          } else if (methodName.startsWith('_')) {
-            access = 'protected';
-          }
-
-          // Check if static or class method
-          const isStatic = methodDecorators.some(
-            (d) => d === '@staticmethod' || d === '@classmethod'
-          );
-
-          methods.push({
-            name: methodName,
-            params: params.filter((p) => p.name !== 'self' && p.name !== 'cls'),
-            return_type: truncateType(returnType),
-            decorators: methodDecorators,
-            access,
-            async: funcNode.children.some((c: any) => c.type === 'async'),
-            static: isStatic,
-            calls: filterCalls(calls),
-            complexity: computePyComplexity(funcNode),
-            lineCount: computePyLineCount(funcNode),
-            nestingDepth: computePyNestingDepth(funcNode),
-            instanceVarAccesses: extractPyInstanceVarAccesses(funcNode),
-          });
-        }
-
-        // Extract class-level assignments as properties
-        const assignments = findDirectChildren(body, 'expression_statement');
-        for (const stmt of assignments) {
-          const assignment = stmt.namedChildren.find((c: any) => c.type === 'assignment');
-          if (assignment) {
-            const left = assignment.childForFieldName('left');
-            const typeAnnotation = assignment.childForFieldName('type');
-            if (left) {
-              properties.push({
-                name: left.text,
-                type: truncateType(typeAnnotation?.text || 'unknown'),
-                access: 'public',
-              });
-            }
-          }
-        }
-
-        // Extract annotated assignments (type hints)
-        const annotatedAssigns = findDirectChildren(body, 'expression_statement');
-        for (const stmt of annotatedAssigns) {
-          const typed = stmt.namedChildren.find(
-            (c: any) => c.type === 'type' || c.type === 'annotated_assignment'
-          );
-          if (!typed) continue;
-          // Already handled above
-        }
-      }
+      const methods = body ? this.extractClassMethods(body, source) : [];
+      const properties = body ? this.extractClassProperties(body) : [];
 
       classes.push({
         name,
@@ -185,6 +107,75 @@ export class PythonParser implements ParserInterface {
     }
 
     return classes;
+  }
+
+  private extractBaseClasses(classNode: any): string[] {
+    const argList = classNode.childForFieldName('superclasses');
+    if (!argList) return [];
+    return argList.namedChildren.map((child: any) => child.text);
+  }
+
+  private extractClassMethods(body: any, source: string): MethodInfo[] {
+    const methods: MethodInfo[] = [];
+    const funcNodes = findDirectChildren(body, 'function_definition');
+
+    for (const funcNode of funcNodes) {
+      const methodName = getChildText(funcNode, 'identifier') || 'unknown';
+      const params = this.extractParams(funcNode);
+      const returnType = this.extractReturnType(funcNode, source);
+      const methodDecorators = this.extractDecorators(funcNode);
+      const calls = this.extractCallExpressions(funcNode);
+
+      let access: 'public' | 'private' | 'protected' = 'public';
+      if (methodName.startsWith('__') && !methodName.endsWith('__')) {
+        access = 'private';
+      } else if (methodName.startsWith('_')) {
+        access = 'protected';
+      }
+
+      const isStatic = methodDecorators.some(
+        (d) => d === '@staticmethod' || d === '@classmethod'
+      );
+
+      methods.push({
+        name: methodName,
+        params: params.filter((p) => p.name !== 'self' && p.name !== 'cls'),
+        return_type: truncateType(returnType),
+        decorators: methodDecorators,
+        access,
+        async: funcNode.children.some((c: any) => c.type === 'async'),
+        static: isStatic,
+        calls: filterCalls(calls),
+        complexity: computePyComplexity(funcNode),
+        lineCount: computePyLineCount(funcNode),
+        nestingDepth: computePyNestingDepth(funcNode),
+        instanceVarAccesses: extractPyInstanceVarAccesses(funcNode),
+      });
+    }
+
+    return methods;
+  }
+
+  private extractClassProperties(body: any): PropertyInfo[] {
+    const properties: PropertyInfo[] = [];
+    const assignments = findDirectChildren(body, 'expression_statement');
+
+    for (const stmt of assignments) {
+      const assignment = stmt.namedChildren.find((c: any) => c.type === 'assignment');
+      if (assignment) {
+        const left = assignment.childForFieldName('left');
+        const typeAnnotation = assignment.childForFieldName('type');
+        if (left) {
+          properties.push({
+            name: left.text,
+            type: truncateType(typeAnnotation?.text || 'unknown'),
+            access: 'public',
+          });
+        }
+      }
+    }
+
+    return properties;
   }
 
   private extractFunctions(rootNode: any, source: string): FunctionInfo[] {

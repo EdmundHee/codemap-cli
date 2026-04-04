@@ -51,6 +51,53 @@ export function buildCallGraph(parsedFiles: ParsedFile[]): CallGraph {
 }
 
 /**
+ * Build a map of unqualified method names → qualified keys.
+ * Used to resolve instance method calls like logger.success() → Logger.success.
+ */
+function buildMethodIndex(allKeys: Set<string>): Map<string, string[]> {
+  const methodToQualified = new Map<string, string[]>();
+  for (const key of allKeys) {
+    const dotIdx = key.indexOf('.');
+    if (dotIdx > 0 && !key.startsWith('__module__')) {
+      const methodName = key.substring(dotIdx + 1);
+      if (!methodToQualified.has(methodName)) {
+        methodToQualified.set(methodName, []);
+      }
+      methodToQualified.get(methodName)!.push(key);
+    }
+  }
+  return methodToQualified;
+}
+
+/**
+ * Resolve a callee to qualified call graph key(s) using three strategies:
+ * 1. Intra-class: unqualified call from same class → "ClassName.method"
+ * 2. Method name lookup: "logger.success" → "Logger.success"
+ * Returns an empty array if no resolution is found.
+ */
+function resolveCallee(
+  callee: string,
+  callerClass: string | null,
+  methodToQualified: Map<string, string[]>,
+  allKeys: Set<string>
+): string[] {
+  const calleeDotIdx = callee.indexOf('.');
+  const calleeMethod = calleeDotIdx > 0 ? callee.substring(calleeDotIdx + 1) : callee;
+  const calleeIsQualified = calleeDotIdx > 0;
+
+  // Intra-class: this.method() → "ClassName.method"
+  if (!calleeIsQualified && callerClass) {
+    const sameClassCallee = `${callerClass}.${callee}`;
+    if (allKeys.has(sameClassCallee)) {
+      return [sameClassCallee];
+    }
+  }
+
+  // Method name lookup: "logger.success" or "success" → "Logger.success"
+  return methodToQualified.get(calleeMethod) || [];
+}
+
+/**
  * Build a reverse call graph (callee → callers).
  * Useful for dead code detection.
  * Uses Map internally to avoid Object.prototype key collisions.
@@ -76,19 +123,7 @@ export function buildReverseCallGraph(callGraph: CallGraph): ReverseCallGraph {
     }
   }
 
-  // Build a map of unqualified method names → qualified keys for resolving
-  // instance method calls like logger.success() → Logger.success
-  const methodToQualified = new Map<string, string[]>();
-  for (const key of allKeys) {
-    const dotIdx = key.indexOf('.');
-    if (dotIdx > 0 && !key.startsWith('__module__')) {
-      const methodName = key.substring(dotIdx + 1);
-      if (!methodToQualified.has(methodName)) {
-        methodToQualified.set(methodName, []);
-      }
-      methodToQualified.get(methodName)!.push(key);
-    }
-  }
+  const methodToQualified = buildMethodIndex(allKeys);
 
   // Populate reverse mappings
   for (const [caller, callees] of Object.entries(callGraph)) {
@@ -101,35 +136,13 @@ export function buildReverseCallGraph(callGraph: CallGraph): ReverseCallGraph {
     for (const callee of callees) {
       addCaller(callee, caller);
 
-      const calleeDotIdx = callee.indexOf('.');
-      const calleeMethod = calleeDotIdx > 0 ? callee.substring(calleeDotIdx + 1) : callee;
-      const calleeIsQualified = calleeDotIdx > 0;
-
-      // If the callee is already a known call graph key, no resolution needed
+      // If already a known key, no further resolution needed
       if (allKeys.has(callee)) continue;
 
-      // Try to resolve the callee to a qualified class method name:
-      // 1. Intra-class: this.method() → "method" should resolve to "ClassName.method"
-      // 2. Instance var: logger.success() → "logger.success" should resolve to "Logger.success"
-      // 3. Direct call: method() → "method" should resolve to "ClassName.method"
-
-      // For intra-class calls, try same-class resolution first
-      if (!calleeIsQualified && callerClass) {
-        const sameClassCallee = `${callerClass}.${callee}`;
-        if (allKeys.has(sameClassCallee)) {
-          addCaller(sameClassCallee, caller);
-          continue;
-        }
-      }
-
-      // Resolve by method name — handles both unqualified ("success")
-      // and variable-qualified ("logger.success") callees by matching
-      // against known class methods in the call graph.
-      const qualifiedMatches = methodToQualified.get(calleeMethod);
-      if (qualifiedMatches) {
-        for (const qualified of qualifiedMatches) {
-          addCaller(qualified, caller);
-        }
+      // Resolve to qualified key(s) and register those callers too
+      const resolved = resolveCallee(callee, callerClass, methodToQualified, allKeys);
+      for (const r of resolved) {
+        addCaller(r, caller);
       }
     }
   }
