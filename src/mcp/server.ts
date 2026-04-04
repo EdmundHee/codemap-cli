@@ -197,32 +197,17 @@ function mdResult(markdown: string) {
 
 // --- Tool registration ---
 
-function registerTools(server: McpServer, projects: ProjectEntry[], projectParam: any, tracker: UsageTracker) {
+type TrackedFn = <P extends Record<string, unknown>>(
+  toolName: string,
+  handler: (params: P) => Promise<any>
+) => (params: P) => Promise<any>;
 
-  /**
-   * Wrap a tool handler with usage tracking.
-   * Records start/end timing, error counts, and parameter frequency.
-   */
-  function tracked<P extends Record<string, unknown>>(
-    toolName: string,
-    handler: (params: P) => Promise<any>
-  ): (params: P) => Promise<any> {
-    return async (params: P) => {
-      const token = tracker.recordStart(toolName, params as Record<string, unknown>);
-      try {
-        const result = await handler(params);
-        const isError = result?.isError === true;
-        const responseBytes = computeResponseBytes(result);
-        tracker.recordEnd(token, isError, responseBytes);
-        return result;
-      } catch (err) {
-        tracker.recordEnd(token, true, 0);
-        throw err;
-      }
-    };
-  }
-
-  // --- Tool: codemap_projects ---
+function registerProjectTools(
+  server: McpServer,
+  projects: ProjectEntry[],
+  projectParam: any,
+  tracked: TrackedFn
+) {
   server.tool(
     'codemap_projects',
     'List all registered codemap projects and their status (file counts, languages, frameworks). '
@@ -252,7 +237,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_overview ---
   server.tool(
     'codemap_overview',
     'Get a high-level overview of the entire project: every module/directory with its classes and functions, '
@@ -268,7 +252,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_module ---
   server.tool(
     'codemap_module',
     'Get all classes, functions, types, imports, and exports for a specific directory/module. '
@@ -287,8 +270,14 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       return mdResult(formatModule(result));
     })
   );
+}
 
-  // --- Tool: codemap_query ---
+function registerSearchTools(
+  server: McpServer,
+  projects: ProjectEntry[],
+  projectParam: any,
+  tracked: TrackedFn
+) {
   server.tool(
     'codemap_query',
     'Search for any function, class, method, type, interface, or file by name across the entire codebase. '
@@ -331,7 +320,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_callers ---
   server.tool(
     'codemap_callers',
     'Find all callers of a function or method — who calls this, where is it used, what references it. '
@@ -349,7 +337,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_calls ---
   server.tool(
     'codemap_calls',
     'Find all functions called by a given function — what does it depend on, what does it use internally. '
@@ -367,8 +354,14 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       return mdResult(formatCalls(getCalls(resolved.data, name)));
     })
   );
+}
 
-  // --- Tool: codemap_health ---
+function registerHealthTools(
+  server: McpServer,
+  projects: ProjectEntry[],
+  projectParam: any,
+  tracked: TrackedFn
+) {
   server.tool(
     'codemap_health',
     'Get project health score (0-100) with detailed code quality metrics: complexity hotspots, '
@@ -391,7 +384,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_health_diff ---
   server.tool(
     'codemap_health_diff',
     'Compare health between current and previous codemap generation. Shows score delta, which metrics '
@@ -410,7 +402,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_structures ---
   server.tool(
     'codemap_structures',
     'Get raw structural analysis data for refactoring decisions. Three analysis types: '
@@ -431,8 +422,15 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       return mdResult(formatStructures(data, type, target));
     })
   );
+}
 
-  // --- Tool: codemap_framework ---
+function registerFrameworkTools(
+  server: McpServer,
+  projects: ProjectEntry[],
+  projectParam: any,
+  tracked: TrackedFn,
+  tracker: UsageTracker
+) {
   server.tool(
     'codemap_framework',
     'Get framework-specific data extracted by enrichers: routes (URL patterns and API endpoints), '
@@ -536,7 +534,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_usage ---
   server.tool(
     'codemap_usage',
     'View MCP tool usage statistics: call counts, latency, error rates, and utilization '
@@ -553,6 +550,36 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       return mdResult(tracker.getSummary());
     })
   );
+}
+
+function registerTools(server: McpServer, projects: ProjectEntry[], projectParam: any, tracker: UsageTracker) {
+  /**
+   * Wrap a tool handler with usage tracking.
+   * Records start/end timing, error counts, and parameter frequency.
+   */
+  function tracked<P extends Record<string, unknown>>(
+    toolName: string,
+    handler: (params: P) => Promise<any>
+  ): (params: P) => Promise<any> {
+    return async (params: P) => {
+      const token = tracker.recordStart(toolName, params as Record<string, unknown>);
+      try {
+        const result = await handler(params);
+        const isError = result?.isError === true;
+        const responseBytes = computeResponseBytes(result);
+        tracker.recordEnd(token, isError, responseBytes);
+        return result;
+      } catch (err) {
+        tracker.recordEnd(token, true, 0);
+        throw err;
+      }
+    };
+  }
+
+  registerProjectTools(server, projects, projectParam, tracked);
+  registerSearchTools(server, projects, projectParam, tracked);
+  registerHealthTools(server, projects, projectParam, tracked);
+  registerFrameworkTools(server, projects, projectParam, tracked, tracker);
 }
 
 // --- Main ---

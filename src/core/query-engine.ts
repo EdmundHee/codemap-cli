@@ -143,6 +143,7 @@ export function getModule(data: CodemapData, directory: string): any | null {
 
 /**
  * Search across all names (classes, functions, methods, types, files).
+ * Used as a fuzzy fallback in codemap_query when exact lookups fail.
  */
 export function search(data: CodemapData, term: string): QueryResult[] {
   const lowerTerm = term.toLowerCase();
