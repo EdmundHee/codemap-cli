@@ -12,6 +12,7 @@ import { generateJson, CodemapData } from '../output/json-generator';
 import { generateMarkdown, generateModuleMarkdown } from '../output/md-generator';
 import { pathToModuleKey } from '../utils/file-utils';
 import { appendHistory } from '../analyzers/history';
+import { getAllEnrichers } from '../enrichers';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
@@ -75,6 +76,30 @@ export class Orchestrator {
       importGraph,
       callGraph,
     });
+
+    // Step 5.5: Run framework enrichers
+    this.logger.start('Running framework enrichers...');
+    const enrichers = getAllEnrichers();
+    let enricherCount = 0;
+    for (const enricher of enrichers) {
+      if (enricher.canEnrich(frameworks)) {
+        try {
+          await enricher.enrich(codemapData, parsed, this.config);
+          enricherCount++;
+          this.logger.info(`  ✓ ${enricher.name}`);
+        } catch (error) {
+          this.logger.warn(`  ✗ ${enricher.name}: ${(error as Error).message}`);
+        }
+      }
+    }
+    if (enricherCount > 0) {
+      const routeCount = codemapData.routes?.length || 0;
+      const modelCount = Object.keys(codemapData.models || {}).length;
+      const mwCount = Object.keys(codemapData.middleware || {}).length;
+      this.logger.info(
+        `Enriched: ${routeCount} routes, ${modelCount} models, ${mwCount} middleware`
+      );
+    }
 
     // Step 6: Write output
     this.logger.start('Writing output files...');

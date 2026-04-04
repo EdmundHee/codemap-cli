@@ -7,6 +7,18 @@ interface FrameworkSignal {
 }
 
 const FRAMEWORK_SIGNALS: FrameworkSignal[] = [
+  // ── JavaScript/TypeScript frameworks ──
+  {
+    name: 'nuxt',
+    detect: (root) =>
+      hasDependency(root, 'nuxt') ||
+      existsSync(join(root, 'nuxt.config.ts')) ||
+      existsSync(join(root, 'nuxt.config.js')),
+  },
+  {
+    name: 'next',
+    detect: (root) => hasDependency(root, 'next'),
+  },
   {
     name: 'express',
     detect: (root) => hasDependency(root, 'express') && !hasDependency(root, '@nestjs/core'),
@@ -16,17 +28,39 @@ const FRAMEWORK_SIGNALS: FrameworkSignal[] = [
     detect: (root) => hasDependency(root, '@nestjs/core'),
   },
   {
-    name: 'fastapi',
-    detect: (root) => hasPythonDependency(root, 'fastapi'),
+    name: 'vue',
+    detect: (root) =>
+      hasDependency(root, 'vue') && !hasDependency(root, 'nuxt'),
   },
+  {
+    name: 'react',
+    detect: (root) =>
+      hasDependency(root, 'react') && !hasDependency(root, 'next'),
+  },
+  // ── Python frameworks ──
   {
     name: 'django',
     detect: (root) => hasPythonDependency(root, 'django') || existsSync(join(root, 'manage.py')),
   },
   {
+    name: 'django-rest-framework',
+    detect: (root) => hasPythonDependency(root, 'djangorestframework'),
+  },
+  {
+    name: 'fastapi',
+    detect: (root) => hasPythonDependency(root, 'fastapi'),
+  },
+  {
     name: 'flask',
     detect: (root) => hasPythonDependency(root, 'flask'),
   },
+  {
+    name: 'pydantic',
+    detect: (root) =>
+      hasPythonDependency(root, 'pydantic') &&
+      !hasPythonDependency(root, 'fastapi'),
+  },
+  // ── ORMs and databases ──
   {
     name: 'prisma',
     detect: (root) => existsSync(join(root, 'prisma', 'schema.prisma')),
@@ -46,6 +80,11 @@ const FRAMEWORK_SIGNALS: FrameworkSignal[] = [
   {
     name: 'sqlalchemy',
     detect: (root) => hasPythonDependency(root, 'sqlalchemy'),
+  },
+  // ── State management ──
+  {
+    name: 'pinia',
+    detect: (root) => hasDependency(root, 'pinia'),
   },
 ];
 

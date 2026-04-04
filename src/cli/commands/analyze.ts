@@ -13,6 +13,10 @@ import { TypeScriptParser } from '../../parsers/typescript/ts-parser';
 import { PythonParser } from '../../parsers/python/py-parser';
 import { VueParser } from '../../parsers/vue/vue-parser';
 import { ParsedFile, ParserInterface } from '../../parsers/parser.interface';
+import {
+  generateRecommendationReport,
+  formatRecommendationReport,
+} from '../../analyzers/recommendations';
 
 export const analyzeCommand = new Command('analyze')
   .description('Analyze codemap for dead code, duplicates, circular dependencies, and unused exports')
@@ -22,6 +26,7 @@ export const analyzeCommand = new Command('analyze')
   .option('--circular', 'Detect circular dependencies', false)
   .option('--all', 'Run all analysis checks', false)
   .option('--json', 'Output raw JSON', false)
+  .option('--no-recommendations', 'Skip recommendation generation')
   .action(async (options) => {
     const logger = new Logger();
     const root = resolve(options.path);
@@ -122,7 +127,36 @@ export const analyzeCommand = new Command('analyze')
       }
     }
 
+    // Generate recommendations
+    if (options.recommendations !== false && !options.json) {
+      const hotspots = data.health?.hotspots || [];
+      const report = generateRecommendationReport(
+        results.dead_code || null,
+        results.duplicates || null,
+        results.circular_dependencies || null,
+        hotspots.length > 0 ? hotspots : null,
+        data,
+      );
+      results.recommendations = report;
+
+      if (report.recommendations.length > 0) {
+        console.log(formatRecommendationReport(report));
+      } else {
+        console.log('\n  No actionable recommendations found.\n');
+      }
+    }
+
     if (options.json) {
+      // Include recommendations in JSON output too
+      const hotspots = data.health?.hotspots || [];
+      const report = generateRecommendationReport(
+        results.dead_code || null,
+        results.duplicates || null,
+        results.circular_dependencies || null,
+        hotspots.length > 0 ? hotspots : null,
+        data,
+      );
+      results.recommendations = report;
       console.log(JSON.stringify(results, null, 2));
     }
 

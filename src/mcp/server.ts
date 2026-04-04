@@ -33,6 +33,10 @@ import {
   getClass,
   getFile,
   getType,
+  getRoutes,
+  getModels,
+  getMiddleware,
+  getFrameworkData,
   QueryResult,
 } from '../core/query-engine';
 import {
@@ -46,6 +50,7 @@ import {
   formatHealth,
   formatStructures,
   formatHealthDiff,
+  formatFrameworkData,
 } from './formatters';
 import { computeTrend } from '../analyzers/history';
 import { UsageTracker, computeResponseBytes } from './usage-tracker';
@@ -192,32 +197,17 @@ function mdResult(markdown: string) {
 
 // --- Tool registration ---
 
-function registerTools(server: McpServer, projects: ProjectEntry[], projectParam: any, tracker: UsageTracker) {
+type TrackedFn = <P extends Record<string, unknown>>(
+  toolName: string,
+  handler: (params: P) => Promise<any>
+) => (params: P) => Promise<any>;
 
-  /**
-   * Wrap a tool handler with usage tracking.
-   * Records start/end timing, error counts, and parameter frequency.
-   */
-  function tracked<P extends Record<string, unknown>>(
-    toolName: string,
-    handler: (params: P) => Promise<any>
-  ): (params: P) => Promise<any> {
-    return async (params: P) => {
-      const token = tracker.recordStart(toolName, params as Record<string, unknown>);
-      try {
-        const result = await handler(params);
-        const isError = result?.isError === true;
-        const responseBytes = computeResponseBytes(result);
-        tracker.recordEnd(token, isError, responseBytes);
-        return result;
-      } catch (err) {
-        tracker.recordEnd(token, true, 0);
-        throw err;
-      }
-    };
-  }
-
-  // --- Tool: codemap_projects ---
+function registerProjectTools(
+  server: McpServer,
+  projects: ProjectEntry[],
+  projectParam: any,
+  tracked: TrackedFn
+) {
   server.tool(
     'codemap_projects',
     'List all registered codemap projects and their status (file counts, languages, frameworks). '
@@ -247,7 +237,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_overview ---
   server.tool(
     'codemap_overview',
     'Get a high-level overview of the entire project: every module/directory with its classes and functions, '
@@ -263,7 +252,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_module ---
   server.tool(
     'codemap_module',
     'Get all classes, functions, types, imports, and exports for a specific directory/module. '
@@ -282,8 +270,14 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       return mdResult(formatModule(result));
     })
   );
+}
 
-  // --- Tool: codemap_query ---
+function registerSearchTools(
+  server: McpServer,
+  projects: ProjectEntry[],
+  projectParam: any,
+  tracked: TrackedFn
+) {
   server.tool(
     'codemap_query',
     'Search for any function, class, method, type, interface, or file by name across the entire codebase. '
@@ -326,7 +320,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_callers ---
   server.tool(
     'codemap_callers',
     'Find all callers of a function or method — who calls this, where is it used, what references it. '
@@ -344,7 +337,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_calls ---
   server.tool(
     'codemap_calls',
     'Find all functions called by a given function — what does it depend on, what does it use internally. '
@@ -362,8 +354,14 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       return mdResult(formatCalls(getCalls(resolved.data, name)));
     })
   );
+}
 
-  // --- Tool: codemap_health ---
+function registerHealthTools(
+  server: McpServer,
+  projects: ProjectEntry[],
+  projectParam: any,
+  tracked: TrackedFn
+) {
   server.tool(
     'codemap_health',
     'Get project health score (0-100) with detailed code quality metrics: complexity hotspots, '
@@ -386,7 +384,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_health_diff ---
   server.tool(
     'codemap_health_diff',
     'Compare health between current and previous codemap generation. Shows score delta, which metrics '
@@ -405,7 +402,6 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
     })
   );
 
-  // --- Tool: codemap_structures ---
   server.tool(
     'codemap_structures',
     'Get raw structural analysis data for refactoring decisions. Three analysis types: '
@@ -426,8 +422,118 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       return mdResult(formatStructures(data, type, target));
     })
   );
+}
 
-  // --- Tool: codemap_usage ---
+function registerFrameworkTools(
+  server: McpServer,
+  projects: ProjectEntry[],
+  projectParam: any,
+  tracked: TrackedFn,
+  tracker: UsageTracker
+) {
+  server.tool(
+    'codemap_framework',
+    'Get framework-specific data extracted by enrichers: routes (URL patterns and API endpoints), '
+    + 'models (Django models, Pydantic schemas, Nuxt composables), middleware, signals, admin '
+    + 'registrations, forms, dependency injection chains, plugins, layouts, and components. '
+    + 'Use when working with Django, FastAPI, or Nuxt projects to understand framework-level '
+    + 'structure: "what routes exist?", "what models are defined?", "what middleware runs?", '
+    + '"what signals are connected?". Supports filtering by framework name.',
+    {
+      framework: z
+        .string()
+        .optional()
+        .describe('Filter by framework: "django", "fastapi", or "nuxt". Omit to get all.'),
+      entity: z
+        .enum(['routes', 'models', 'middleware', 'all'])
+        .optional()
+        .describe('Which entity type to return. Default: "all"'),
+      filter: z
+        .string()
+        .optional()
+        .describe('Optional filter: for routes, filter by path pattern; for models, filter by name'),
+      project: projectParam,
+    },
+    tracked('codemap_framework', async ({ framework, entity, filter, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const { data } = resolved;
+
+      // If specific framework requested, get complete framework view
+      if (framework && (!entity || entity === 'all')) {
+        const fwData = getFrameworkData(data, framework);
+        if (!fwData.routes.length && !fwData.models.length && !fwData.middleware.length) {
+          return mdResult(`No enriched data found for framework "${framework}". Make sure to regenerate: \`codemap generate\``);
+        }
+        return mdResult(formatFrameworkData(fwData));
+      }
+
+      // Entity-specific queries
+      const entityType = entity || 'all';
+      const lines: string[] = [];
+
+      if (entityType === 'routes' || entityType === 'all') {
+        const routes = getRoutes(data, {
+          framework: framework,
+          path: filter,
+        });
+        if (routes.length > 0) {
+          lines.push(`## Routes (${routes.length})\n`);
+          for (const r of routes) {
+            const methods = Array.isArray(r.method) ? r.method.join(',') : r.method;
+            const auth = r.auth ? ` [auth: ${r.auth.join(', ')}]` : '';
+            const tags = r.tags ? ` [tags: ${r.tags.join(', ')}]` : '';
+            lines.push(`${methods} ${r.path} → ${r.handler}${auth}${tags} [${r.file}]`);
+          }
+          lines.push('');
+        }
+      }
+
+      if (entityType === 'models' || entityType === 'all') {
+        const models = getModels(data, { framework });
+        const filtered = filter
+          ? models.filter((m) => m.name.toLowerCase().includes(filter.toLowerCase()))
+          : models;
+        if (filtered.length > 0) {
+          lines.push(`## Models (${filtered.length})\n`);
+          for (const m of filtered) {
+            lines.push(`**${m.kind}: ${m.name}** [${m.file}]`);
+            if (m.fields?.length) {
+              const fieldStrs = m.fields.map((f: any) => {
+                const rel = f.relationship ? ` → ${f.related_model || '?'}` : '';
+                const req = f.required ? '' : '?';
+                return `${f.name}${req}: ${f.type}${rel}`;
+              });
+              lines.push(`  fields: ${fieldStrs.join(', ')}`);
+            }
+            if (m.relationships?.length) {
+              lines.push(`  refs: ${m.relationships.join(', ')}`);
+            }
+          }
+          lines.push('');
+        }
+      }
+
+      if (entityType === 'middleware' || entityType === 'all') {
+        const mws = getMiddleware(data, { framework });
+        if (mws.length > 0) {
+          lines.push(`## Middleware (${mws.length})\n`);
+          for (const mw of mws) {
+            const methods = mw.methods?.length ? ` [${mw.methods.join(', ')}]` : '';
+            lines.push(`${mw.type}: ${mw.name}${methods} [${mw.file}]`);
+          }
+          lines.push('');
+        }
+      }
+
+      if (lines.length === 0) {
+        return mdResult('No framework data found. Run `codemap generate` to populate.');
+      }
+
+      return mdResult(lines.join('\n'));
+    })
+  );
+
   server.tool(
     'codemap_usage',
     'View MCP tool usage statistics: call counts, latency, error rates, and utilization '
@@ -444,6 +550,36 @@ function registerTools(server: McpServer, projects: ProjectEntry[], projectParam
       return mdResult(tracker.getSummary());
     })
   );
+}
+
+function registerTools(server: McpServer, projects: ProjectEntry[], projectParam: any, tracker: UsageTracker) {
+  /**
+   * Wrap a tool handler with usage tracking.
+   * Records start/end timing, error counts, and parameter frequency.
+   */
+  function tracked<P extends Record<string, unknown>>(
+    toolName: string,
+    handler: (params: P) => Promise<any>
+  ): (params: P) => Promise<any> {
+    return async (params: P) => {
+      const token = tracker.recordStart(toolName, params as Record<string, unknown>);
+      try {
+        const result = await handler(params);
+        const isError = result?.isError === true;
+        const responseBytes = computeResponseBytes(result);
+        tracker.recordEnd(token, isError, responseBytes);
+        return result;
+      } catch (err) {
+        tracker.recordEnd(token, true, 0);
+        throw err;
+      }
+    };
+  }
+
+  registerProjectTools(server, projects, projectParam, tracked);
+  registerSearchTools(server, projects, projectParam, tracked);
+  registerHealthTools(server, projects, projectParam, tracked);
+  registerFrameworkTools(server, projects, projectParam, tracked, tracker);
 }
 
 // --- Main ---

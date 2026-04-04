@@ -4,6 +4,7 @@ import { join, resolve } from 'path';
 import { Logger } from '../../utils/logger';
 import { CodemapData } from '../../output/json-generator';
 import { computeTrend, loadHistory } from '../../analyzers/history';
+import { generateHotspotRecommendations } from '../../analyzers/recommendations';
 
 export const healthCommand = new Command('health')
   .description('Show project health score, metrics, and hotspots. Use --gate for CI quality gates.')
@@ -109,6 +110,23 @@ export const healthCommand = new Command('health')
         for (const m of trend.topMovers.slice(0, 3)) {
           const dir = m.direction === 'worse' ? '↑' : '↓';
           console.log(`    ${m.metric}: ${m.previous} → ${m.current} (${dir})`);
+        }
+      }
+    }
+
+    // Top recommendations from hotspots
+    if (health.hotspots.length > 0) {
+      const recs = generateHotspotRecommendations(health.hotspots);
+      if (recs.length > 0) {
+        const topRecs = recs.filter(r => r.priority === 'critical' || r.priority === 'high').slice(0, 3);
+        if (topRecs.length > 0) {
+          console.log('\n  Top Recommendations:');
+          for (const rec of topRecs) {
+            const icon = rec.priority === 'critical' ? '🔴' : '🟠';
+            console.log(`    ${icon} ${rec.title}`);
+            console.log(`      → ${rec.action_plan[0]}`);
+          }
+          console.log('\n  Run `codemap analyze --all` for full recommendations with action plans.');
         }
       }
     }
