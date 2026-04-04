@@ -36,6 +36,16 @@ export function formatOverview(overview: any): string {
     lines.push(`- \`${dir}/\` — ${parts.join(', ')}`);
   }
 
+  // Framework enrichment summary
+  if (overview.framework_data && Object.keys(overview.framework_data).length > 0) {
+    lines.push('');
+    lines.push('## Framework Data');
+    for (const [key, count] of Object.entries(overview.framework_data)) {
+      const label = key.replace(/_/g, ' ');
+      lines.push(`- ${label}: ${count}`);
+    }
+  }
+
   const packages = overview.dependencies?.packages;
   if (packages && Object.keys(packages).length) {
     lines.push('');
@@ -624,6 +634,179 @@ function formatDeadCodeData(data: CodemapData): string {
 
   if (deadFunctions.length > 30) {
     lines.push(`... and ${deadFunctions.length - 30} more`);
+  }
+
+  return lines.join('\n');
+}
+
+// --- Framework data ---
+
+export function formatFrameworkData(fwData: any): string {
+  const lines: string[] = [];
+  const fw = fwData.framework;
+
+  lines.push(`# Framework: ${fw}`);
+  lines.push('');
+
+  // Routes
+  if (fwData.routes?.length > 0) {
+    lines.push(`## Routes (${fwData.routes.length})`);
+    lines.push('');
+    for (const r of fwData.routes) {
+      const methods = Array.isArray(r.method) ? r.method.join(',') : r.method;
+      const auth = r.auth ? ` 🔒 ${r.auth.join(', ')}` : '';
+      const tags = r.tags ? ` [${r.tags.join(', ')}]` : '';
+      const deps = r.dependencies?.length ? ` ← Depends(${r.dependencies.join(', ')})` : '';
+      const mw = r.middleware?.length ? ` [mw: ${r.middleware.join(', ')}]` : '';
+      lines.push(`- \`${methods} ${r.path}\` → \`${r.handler}\`${auth}${tags}${deps}${mw} — ${r.file}`);
+      if (r.params?.length) {
+        const paramStrs = r.params.map((p: any) => `${p.name}: ${p.type}${p.required ? '' : '?'} (${p.location})`);
+        lines.push(`  params: ${paramStrs.join(', ')}`);
+      }
+      if (r.response_model) lines.push(`  response: ${r.response_model}`);
+    }
+    lines.push('');
+  }
+
+  // Models
+  if (fwData.models?.length > 0) {
+    lines.push(`## Models (${fwData.models.length})`);
+    lines.push('');
+    for (const m of fwData.models) {
+      const ext = m.extends ? ` extends ${m.extends}` : '';
+      lines.push(`- **${m.kind}: ${m.name}**${ext} — ${m.file}`);
+      if (m.fields?.length) {
+        for (const f of m.fields.slice(0, 15)) {
+          const rel = f.relationship ? ` → ${f.related_model || '?'} (${f.relationship})` : '';
+          const req = f.required ? '' : '?';
+          const opts = f.options ? ` ${JSON.stringify(f.options)}` : '';
+          lines.push(`  - ${f.name}${req}: ${f.type}${rel}${opts}`);
+        }
+        if (m.fields.length > 15) lines.push(`  - ... +${m.fields.length - 15} more fields`);
+      }
+      if (m.relationships?.length) lines.push(`  refs: ${m.relationships.join(', ')}`);
+      if (m.admin_registered) lines.push(`  ✓ registered in admin`);
+    }
+    lines.push('');
+  }
+
+  // Middleware
+  if (fwData.middleware?.length > 0) {
+    lines.push(`## Middleware (${fwData.middleware.length})`);
+    lines.push('');
+    for (const mw of fwData.middleware) {
+      const methods = mw.methods?.length ? ` [${mw.methods.join(', ')}]` : '';
+      const global = mw.global ? ' [global]' : '';
+      lines.push(`- ${mw.type}: \`${mw.name}\`${methods}${global} — ${mw.file}`);
+    }
+    lines.push('');
+  }
+
+  // Django-specific
+  if (fwData.signals?.length > 0) {
+    lines.push(`## Signals (${fwData.signals.length})`);
+    lines.push('');
+    for (const s of fwData.signals) {
+      const sender = s.sender ? ` (sender: ${s.sender})` : '';
+      lines.push(`- \`${s.signal}\` → \`${s.receiver}\`${sender} — ${s.file}`);
+    }
+    lines.push('');
+  }
+
+  if (fwData.admin?.length > 0) {
+    lines.push(`## Admin Registrations (${fwData.admin.length})`);
+    lines.push('');
+    for (const a of fwData.admin) {
+      const model = a.model ? ` → ${a.model}` : '';
+      lines.push(`- \`${a.admin_class}\`${model} — ${a.file}`);
+      const opts = Object.entries(a.options || {})
+        .filter(([, v]) => v && (Array.isArray(v) ? v.length > 0 : true))
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`);
+      if (opts.length) lines.push(`  ${opts.join(' | ')}`);
+    }
+    lines.push('');
+  }
+
+  if (fwData.forms?.length > 0) {
+    lines.push(`## Forms (${fwData.forms.length})`);
+    lines.push('');
+    for (const f of fwData.forms) {
+      const model = f.model ? ` (model: ${f.model})` : '';
+      const validators = f.validators?.length ? ` [validators: ${f.validators.join(', ')}]` : '';
+      lines.push(`- ${f.kind}: \`${f.name}\`${model}${validators} — ${f.file}`);
+    }
+    lines.push('');
+  }
+
+  if (fwData.management_commands?.length > 0) {
+    lines.push(`## Management Commands (${fwData.management_commands.length})`);
+    lines.push('');
+    for (const cmd of fwData.management_commands) {
+      const help = cmd.help ? ` — ${cmd.help}` : '';
+      lines.push(`- \`${cmd.name}\`${help} — ${cmd.file}`);
+    }
+    lines.push('');
+  }
+
+  if (fwData.template_tags?.length > 0) {
+    lines.push(`## Template Tags (${fwData.template_tags.length})`);
+    lines.push('');
+    for (const t of fwData.template_tags) {
+      lines.push(`- ${t.kind}: \`${t.name}\` → \`${t.handler}\` — ${t.file}`);
+    }
+    lines.push('');
+  }
+
+  // FastAPI-specific
+  if (fwData.di_providers?.length > 0) {
+    lines.push(`## Dependency Injection (${fwData.di_providers.length})`);
+    lines.push('');
+    for (const d of fwData.di_providers) {
+      const subDeps = d.depends_on?.length ? ` ← Depends(${d.depends_on.join(', ')})` : '';
+      const usedBy = d.used_by?.length ? ` → used by: ${d.used_by.join(', ')}` : '';
+      lines.push(`- \`${d.name}\`: ${d.return_type}${subDeps}${usedBy} — ${d.file}`);
+    }
+    lines.push('');
+  }
+
+  if (fwData.security_schemes?.length > 0) {
+    lines.push(`## Security Schemes`);
+    lines.push('');
+    lines.push(fwData.security_schemes.join(', '));
+    lines.push('');
+  }
+
+  // Nuxt-specific
+  if (fwData.plugins?.length > 0) {
+    lines.push(`## Plugins (${fwData.plugins.length})`);
+    lines.push('');
+    for (const p of fwData.plugins) {
+      const mode = p.mode ? ` [${p.mode}]` : '';
+      const provides = p.provides?.length ? ` provides: ${p.provides.join(', ')}` : '';
+      lines.push(`- \`${p.name}\`${mode}${provides} — ${p.file}`);
+    }
+    lines.push('');
+  }
+
+  if (fwData.layouts?.length > 0) {
+    lines.push(`## Layouts (${fwData.layouts.length})`);
+    lines.push('');
+    for (const l of fwData.layouts) {
+      const usedBy = l.used_by?.length ? ` → ${l.used_by.length} pages` : '';
+      lines.push(`- \`${l.name}\`${usedBy} — ${l.file}`);
+    }
+    lines.push('');
+  }
+
+  if (fwData.components?.length > 0) {
+    lines.push(`## Components (${fwData.components.length})`);
+    lines.push('');
+    for (const c of fwData.components) {
+      const props = c.props?.length ? ` (${c.props.length} props)` : '';
+      const usedBy = c.used_by?.length ? ` → ${c.used_by.length} usages` : '';
+      lines.push(`- \`${c.name}\`${props}${usedBy} — ${c.file}`);
+    }
+    lines.push('');
   }
 
   return lines.join('\n');
