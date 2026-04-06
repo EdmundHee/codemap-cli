@@ -12,37 +12,38 @@ export interface QueryResult {
   data: any;
 }
 
-/**
- * Get a high-level project overview.
- */
-export function getOverview(data: CodemapData): any {
-  // Group files by directory
+function dirFromPath(filePath: string): string {
+  return filePath.includes('/') ? filePath.split('/').slice(0, -1).join('/') : '.';
+}
+
+function buildModuleStats(data: CodemapData): Record<string, { files: number; classes: number; functions: number; types: number }> {
   const modules: Record<string, { files: number; classes: number; functions: number; types: number }> = {};
 
   for (const filePath of Object.keys(data.files)) {
-    const dir = filePath.includes('/') ? filePath.split('/').slice(0, -1).join('/') : '.';
-    if (!modules[dir]) {
-      modules[dir] = { files: 0, classes: 0, functions: 0, types: 0 };
-    }
+    const dir = dirFromPath(filePath);
+    if (!modules[dir]) modules[dir] = { files: 0, classes: 0, functions: 0, types: 0 };
     modules[dir].files++;
   }
 
   for (const [, cls] of Object.entries(data.classes) as [string, any][]) {
-    const dir = cls.file.includes('/') ? cls.file.split('/').slice(0, -1).join('/') : '.';
+    const dir = dirFromPath(cls.file);
     if (modules[dir]) modules[dir].classes++;
   }
 
   for (const [, func] of Object.entries(data.functions) as [string, any][]) {
-    const dir = func.file.includes('/') ? func.file.split('/').slice(0, -1).join('/') : '.';
+    const dir = dirFromPath(func.file);
     if (modules[dir]) modules[dir].functions++;
   }
 
   for (const [, type] of Object.entries(data.types) as [string, any][]) {
-    const dir = type.file.includes('/') ? type.file.split('/').slice(0, -1).join('/') : '.';
+    const dir = dirFromPath(type.file);
     if (modules[dir]) modules[dir].types++;
   }
 
-  // Framework enrichment summary
+  return modules;
+}
+
+function buildFrameworkSummary(data: CodemapData): any {
   const framework_data: any = {};
   if (data.routes?.length > 0) framework_data.routes = data.routes.length;
   if (data.models && Object.keys(data.models).length > 0) {
@@ -59,6 +60,15 @@ export function getOverview(data: CodemapData): any {
   if (extData.plugins?.length > 0) framework_data.plugins = extData.plugins.length;
   if (extData.layouts?.length > 0) framework_data.layouts = extData.layouts.length;
   if (extData.components?.length > 0) framework_data.components = extData.components.length;
+  return framework_data;
+}
+
+/**
+ * Get a high-level project overview.
+ */
+export function getOverview(data: CodemapData): any {
+  const modules = buildModuleStats(data);
+  const framework_data = buildFrameworkSummary(data);
 
   return {
     project: data.project.name,
@@ -394,11 +404,27 @@ export function getMiddleware(
   return mws;
 }
 
+function addFrameworkExtras(result: any, extData: any, framework: string): void {
+  if (framework === 'django') {
+    if (extData.signals?.length) result.signals = extData.signals.filter((s: any) => s.framework === 'django');
+    if (extData.admin?.length) result.admin = extData.admin;
+    if (extData.forms?.length) result.forms = extData.forms;
+    if (extData.management_commands?.length) result.management_commands = extData.management_commands;
+    if (extData.template_tags?.length) result.template_tags = extData.template_tags;
+  } else if (framework === 'fastapi') {
+    if (extData.di_providers?.length) result.di_providers = extData.di_providers;
+    if (extData.security_schemes?.length) result.security_schemes = extData.security_schemes;
+  } else if (framework === 'nuxt') {
+    if (extData.plugins?.length) result.plugins = extData.plugins;
+    if (extData.layouts?.length) result.layouts = extData.layouts;
+    if (extData.components?.length) result.components = extData.components;
+  }
+}
+
 /**
  * Get complete framework data summary for a specific framework.
  */
 export function getFrameworkData(data: CodemapData, framework: string): any {
-  const extData = data as any;
   const result: any = {
     framework,
     routes: (data.routes || []).filter((r: any) => r.framework === framework),
@@ -410,25 +436,6 @@ export function getFrameworkData(data: CodemapData, framework: string): any {
       .map(([key, m]) => ({ key, ...m as any })),
   };
 
-  // Add framework-specific extras
-  if (framework === 'django') {
-    if (extData.signals?.length) result.signals = extData.signals.filter((s: any) => s.framework === 'django');
-    if (extData.admin?.length) result.admin = extData.admin;
-    if (extData.forms?.length) result.forms = extData.forms;
-    if (extData.management_commands?.length) result.management_commands = extData.management_commands;
-    if (extData.template_tags?.length) result.template_tags = extData.template_tags;
-  }
-
-  if (framework === 'fastapi') {
-    if (extData.di_providers?.length) result.di_providers = extData.di_providers;
-    if (extData.security_schemes?.length) result.security_schemes = extData.security_schemes;
-  }
-
-  if (framework === 'nuxt') {
-    if (extData.plugins?.length) result.plugins = extData.plugins;
-    if (extData.layouts?.length) result.layouts = extData.layouts;
-    if (extData.components?.length) result.components = extData.components;
-  }
-
+  addFrameworkExtras(result, data as any, framework);
   return result;
 }

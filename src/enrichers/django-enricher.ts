@@ -198,6 +198,29 @@ function isMiddlewareClass(cls: ClassInfo): boolean {
   return hasCall && hasInit;
 }
 
+function extractRelationshipInfo(field: ModelFieldInfo, cleanFieldType: string, type: string): void {
+  if (!(cleanFieldType in DJANGO_RELATIONSHIP_FIELDS)) return;
+  field.relationship = DJANGO_RELATIONSHIP_FIELDS[cleanFieldType];
+  const relMatch = type.match(/\(\s*['"]?([A-Za-z_]+(?:\.[A-Za-z_]+)?)['"]?/);
+  if (relMatch) field.related_model = relMatch[1];
+}
+
+function extractFieldOptions(field: ModelFieldInfo, type: string): void {
+  const options: Record<string, any> = {};
+  const maxLenMatch = type.match(/max_length\s*=\s*(\d+)/);
+  if (maxLenMatch) options.max_length = parseInt(maxLenMatch[1]);
+  if (type.includes('unique=True')) options.unique = true;
+  if (type.includes('null=True')) options.null = true;
+  if (type.includes('blank=True')) options.blank = true;
+  if (type.includes('db_index=True')) options.db_index = true;
+  const defaultMatch = type.match(/default\s*=\s*([^,)]+)/);
+  if (defaultMatch) {
+    field.default = defaultMatch[1].trim();
+    options.default = field.default;
+  }
+  if (Object.keys(options).length > 0) field.options = options;
+}
+
 function extractModelFields(cls: ClassInfo): ModelFieldInfo[] {
   const fields: ModelFieldInfo[] = [];
 
@@ -206,7 +229,6 @@ function extractModelFields(cls: ClassInfo): ModelFieldInfo[] {
     const fieldType = type.split('(')[0].trim();
     const cleanFieldType = fieldType.split('.').pop() || fieldType;
 
-    // Check if this is a Django field type
     if (DJANGO_FIELD_TYPES.has(cleanFieldType) || cleanFieldType in DJANGO_RELATIONSHIP_FIELDS) {
       const field: ModelFieldInfo = {
         name: prop.name,
@@ -214,31 +236,8 @@ function extractModelFields(cls: ClassInfo): ModelFieldInfo[] {
         required: !type.includes('null=True') && !type.includes('blank=True') && !type.includes('default='),
       };
 
-      // Extract relationship info
-      if (cleanFieldType in DJANGO_RELATIONSHIP_FIELDS) {
-        field.relationship = DJANGO_RELATIONSHIP_FIELDS[cleanFieldType];
-        // Extract related model from first arg
-        const relMatch = type.match(/\(\s*['"]?([A-Za-z_]+(?:\.[A-Za-z_]+)?)['"]?/);
-        if (relMatch) {
-          field.related_model = relMatch[1];
-        }
-      }
-
-      // Extract common options
-      const options: Record<string, any> = {};
-      const maxLenMatch = type.match(/max_length\s*=\s*(\d+)/);
-      if (maxLenMatch) options.max_length = parseInt(maxLenMatch[1]);
-      if (type.includes('unique=True')) options.unique = true;
-      if (type.includes('null=True')) options.null = true;
-      if (type.includes('blank=True')) options.blank = true;
-      if (type.includes('db_index=True')) options.db_index = true;
-      const defaultMatch = type.match(/default\s*=\s*([^,)]+)/);
-      if (defaultMatch) {
-        field.default = defaultMatch[1].trim();
-        options.default = field.default;
-      }
-      if (Object.keys(options).length > 0) field.options = options;
-
+      extractRelationshipInfo(field, cleanFieldType, type);
+      extractFieldOptions(field, type);
       fields.push(field);
     }
   }
@@ -351,52 +350,41 @@ interface URLPattern {
   namespace?: string;
 }
 
-function extractURLPatterns(parsed: ParsedFile): URLPattern[] {
-  const patterns: URLPattern[] = [];
-  const filePath = parsed.file.relative;
+function parseURLPatternCall(call: string): URLPattern | null {
+  const pathMatch = call.match(/^(?:path|re_path|url)\s*\(\s*['"]([^'"]*)['"]\s*,\s*([^,)]+)(?:\s*,\s*name\s*=\s*['"]([^'"]+)['"])?\s*\)/);
+  if (!pathMatch) return null;
 
-  // Only process files that are likely URL configs
-  if (!filePath.includes('urls') && !filePath.includes('router') && !filePath.includes('routes')) {
-    return patterns;
+  const pattern: URLPattern = {
+    path: pathMatch[1],
+    handler: pathMatch[2].trim(),
+  };
+  if (pathMatch[3]) pattern.name = pathMatch[3];
+
+  if (pattern.handler.includes('include(')) {
+    pattern.is_include = true;
+    const nsMatch = pattern.handler.match(/namespace\s*=\s*['"]([^'"]+)['"]/);
+    if (nsMatch) pattern.namespace = nsMatch[1];
   }
 
-  // Look for module-level calls to path(), re_path(), url(), include()
+  return pattern;
+}
+
+function extractURLPatterns(parsed: ParsedFile): URLPattern[] {
+  const filePath = parsed.file.relative;
+  if (!filePath.includes('urls') && !filePath.includes('router') && !filePath.includes('routes')) {
+    return [];
+  }
+
   const allCalls = [
     ...(parsed.moduleCalls || []),
     ...parsed.functions.flatMap((f) => f.calls),
   ];
 
+  const patterns: URLPattern[] = [];
   for (const call of allCalls) {
-    // Match path('pattern', view, name='name')
-    const pathMatch = call.match(/^(?:path|re_path|url)\s*\(\s*['"]([^'"]*)['"]\s*,\s*([^,)]+)(?:\s*,\s*name\s*=\s*['"]([^'"]+)['"])?\s*\)/);
-    if (pathMatch) {
-      const pattern: URLPattern = {
-        path: pathMatch[1],
-        handler: pathMatch[2].trim(),
-      };
-      if (pathMatch[3]) pattern.name = pathMatch[3];
-
-      // Check if it's an include()
-      if (pattern.handler.includes('include(')) {
-        pattern.is_include = true;
-        const nsMatch = pattern.handler.match(/namespace\s*=\s*['"]([^'"]+)['"]/);
-        if (nsMatch) pattern.namespace = nsMatch[1];
-      }
-
-      patterns.push(pattern);
-    }
+    const pattern = parseURLPatternCall(call);
+    if (pattern) patterns.push(pattern);
   }
-
-  // Also extract from function calls that look like path/re_path
-  for (const func of parsed.functions) {
-    for (const callExpr of func.calls) {
-      if (callExpr === 'path' || callExpr === 're_path' || callExpr === 'url') {
-        // The actual args are hard to get from call name alone
-        // but we mark the function as URL-related
-      }
-    }
-  }
-
   return patterns;
 }
 
@@ -511,6 +499,272 @@ function extractManagementCommand(parsed: ParsedFile): ManagementCommandInfo | n
   return command;
 }
 
+// ─── Extracted Phase Functions ────────────────────────────────────────────
+
+function extractDjangoModelInfo(cls: ClassInfo, filePath: string): ModelInfo | null {
+  if (!isDjangoModel(cls)) return null;
+
+  const fields = extractModelFields(cls);
+  const meta = extractMetaOptions(cls);
+  const isAbstract = meta?.abstract === true;
+  const isProxy = meta?.proxy === true;
+
+  const model: ModelInfo = {
+    name: cls.name,
+    file: filePath,
+    framework: 'django',
+    kind: isAbstract ? 'django_abstract_model' : isProxy ? 'django_proxy_model' : 'django_model',
+    extends: cls.extends || undefined,
+    fields,
+    meta,
+    relationships: fields
+      .filter((f) => f.related_model)
+      .map((f) => f.related_model!),
+    decorators: cls.decorators,
+  };
+
+  // Check for custom managers
+  const managers = cls.properties
+    .filter((prop) => prop.type?.includes('Manager') || prop.type?.includes('QuerySet'))
+    .map((prop) => prop.name);
+  if (managers.length > 0) model.managers = managers;
+
+  return model;
+}
+
+function extractClassBasedView(cls: ClassInfo, filePath: string): RouteInfo | null {
+  if (!isViewClass(cls)) return null;
+
+  const methods = getViewMethods(cls);
+  const httpMethods = methods.length > 0 ? methods : ['GET'];
+
+  const route: RouteInfo = {
+    method: httpMethods,
+    path: '', // Will be linked from URL patterns
+    handler: cls.name,
+    file: filePath,
+    decorators: cls.decorators,
+    params: [],
+    framework: 'django',
+    route_type: 'view',
+  };
+
+  // Check for auth decorators
+  const authDecorators = cls.decorators.filter((d) => {
+    const name = stripDecorator(d);
+    return name === 'login_required' || name === 'permission_required';
+  });
+  if (authDecorators.length > 0) {
+    route.auth = authDecorators.map((d) => stripDecorator(d));
+  }
+
+  return route;
+}
+
+function extractDjangoMiddleware(cls: ClassInfo, filePath: string): MiddlewareInfo | null {
+  if (!isMiddlewareClass(cls)) return null;
+
+  return {
+    name: cls.name,
+    file: filePath,
+    framework: 'django',
+    type: 'class_middleware',
+    methods: cls.methods
+      .filter((m) => m.name.startsWith('process_') || m.name === '__call__')
+      .map((m) => m.name),
+  };
+}
+
+function extractDjangoAdmin(cls: ClassInfo, filePath: string): AdminRegistration | null {
+  if (!isAdminClass(cls)) return null;
+
+  const options = extractAdminOptions(cls);
+  return {
+    admin_class: cls.name,
+    model: '', // Will be resolved from register() calls
+    file: filePath,
+    options,
+  };
+}
+
+function extractDjangoForm(cls: ClassInfo, filePath: string): FormInfo | null {
+  if (!isDjangoForm(cls)) return null;
+
+  const fields = extractFormFields(cls);
+  const base = cls.extends?.split('.').pop() || cls.extends || '';
+  const isModelForm = base.includes('ModelForm');
+
+  return {
+    name: cls.name,
+    file: filePath,
+    framework: 'django',
+    kind: isModelForm ? 'model_form' : 'form',
+    fields,
+    validators: cls.methods
+      .filter((m) => m.name.startsWith('clean_') || m.name === 'clean')
+      .map((m) => m.name),
+  };
+}
+
+function extractSerializer(cls: ClassInfo, filePath: string): ModelInfo | null {
+  if (!isSerializer(cls)) return null;
+
+  const fields = extractFormFields(cls); // Similar field structure
+  const base = cls.extends?.split('.').pop() || cls.extends || '';
+  const isModelSerializer = base.includes('ModelSerializer');
+
+  const serializer: ModelInfo = {
+    name: cls.name,
+    file: filePath,
+    framework: 'django',
+    kind: 'django_model',
+    extends: cls.extends || undefined,
+    fields: fields,
+    relationships: [],
+    decorators: cls.decorators,
+  };
+
+  // Track as a special model-like entity
+  if (isModelSerializer) {
+    serializer.serializer_model = ''; // Would need Meta.model resolution
+  }
+
+  return serializer;
+}
+
+function extractHttpMethodsFromDecorators(decorators: string[]): string | string[] {
+  let method: string | string[] = 'GET';
+  for (const d of decorators) {
+    const name = stripDecorator(d);
+    if (name === 'api_view' || name === 'require_http_methods') {
+      const methods = extractListArgs(extractDecoratorArgs(d));
+      if (methods.length > 0) method = methods;
+    }
+    if (name === 'require_GET') method = 'GET';
+    if (name === 'require_POST') method = 'POST';
+  }
+  return method;
+}
+
+function extractAuthFromDecorators(decorators: string[]): string[] | undefined {
+  const authDecorators = decorators.filter((d: string) => {
+    const name = stripDecorator(d);
+    return name === 'login_required' || name === 'permission_required';
+  });
+  return authDecorators.length > 0 ? authDecorators.map((d: string) => stripDecorator(d)) : undefined;
+}
+
+function extractFunctionBasedView(func: FunctionInfo, imports: ImportInfo[], filePath: string): RouteInfo | null {
+  if (!isViewFunction(func, imports)) return null;
+
+  const decorators: string[] = (func as any).decorators || [];
+  const route: RouteInfo = {
+    method: extractHttpMethodsFromDecorators(decorators),
+    path: '',
+    handler: func.name,
+    file: filePath,
+    decorators,
+    params: func.params
+      .filter((param) => param.name !== 'request' && param.name !== 'self')
+      .map((param) => ({
+        name: param.name,
+        type: param.type || 'any',
+        required: !param.optional,
+        location: 'path' as const,
+      })),
+    framework: 'django',
+    route_type: 'view',
+  };
+
+  const auth = extractAuthFromDecorators(decorators);
+  if (auth) route.auth = auth;
+
+  return route;
+}
+
+function linkURLPatternsToRoutes(patterns: URLPattern[], routes: RouteInfo[]): void {
+  for (const pattern of patterns) {
+    if (pattern.is_include) continue;
+
+    // Find matching route by handler name
+    const handlerName = pattern.handler.split('.').pop()?.trim() || pattern.handler.trim();
+    const matchingRoute = routes.find(
+      (r) => r.handler === handlerName || r.handler.endsWith(`.${handlerName}`)
+    );
+
+    if (matchingRoute) {
+      matchingRoute.path = `/${pattern.path}`;
+      if (pattern.name) matchingRoute.url_name = pattern.name;
+      if (pattern.namespace) matchingRoute.namespace = pattern.namespace;
+    }
+  }
+}
+
+function linkAdminToModels(
+  parsed: ParsedFile[],
+  admin: AdminRegistration[],
+  models: Record<string, ModelInfo>
+): void {
+  // Look for admin.site.register(Model, ModelAdmin) calls
+  for (const p of parsed) {
+    const allCalls = [
+      ...(p.moduleCalls || []),
+      ...p.functions.flatMap((f) => f.calls),
+    ];
+
+    for (const call of allCalls) {
+      if (call.includes('register') && call.includes('admin')) {
+        // Try to extract model and admin class names
+        const registerMatch = call.match(/register\s*\(\s*([A-Za-z_]+)\s*(?:,\s*([A-Za-z_]+))?\s*\)/);
+        if (registerMatch) {
+          const modelName = registerMatch[1];
+          const adminClassName = registerMatch[2];
+
+          // Mark model as admin-registered
+          if (models[modelName]) {
+            models[modelName].admin_registered = true;
+          }
+
+          // Link admin class to model
+          if (adminClassName) {
+            const adminEntry = admin.find((a) => a.admin_class === adminClassName);
+            if (adminEntry) adminEntry.model = modelName;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Populate CodemapData with all collected Django entities.
+ */
+function populateDjangoData(
+  data: CodemapData,
+  routes: RouteInfo[],
+  models: Record<string, ModelInfo>,
+  serializers: Record<string, ModelInfo>,
+  middleware: Record<string, MiddlewareInfo>,
+  signals: SignalInfo[],
+  admin: AdminRegistration[],
+  forms: FormInfo[],
+  managementCommands: ManagementCommandInfo[],
+  templateTags: TemplateTagInfo[]
+): void {
+  data.routes.push(...routes);
+  Object.assign(data.models, models, serializers);
+  Object.assign(data.middleware, middleware);
+
+  (data as any).signals = [...((data as any).signals || []), ...signals];
+  (data as any).admin = [...((data as any).admin || []), ...admin];
+  (data as any).forms = [...((data as any).forms || []), ...forms];
+  (data as any).management_commands = [
+    ...((data as any).management_commands || []),
+    ...managementCommands,
+  ];
+  (data as any).template_tags = [...((data as any).template_tags || []), ...templateTags];
+}
+
 // ─── Django Enricher ───────────────────────────────────────────────────────
 
 export class DjangoEnricher implements FrameworkEnricher {
@@ -535,271 +789,53 @@ export class DjangoEnricher implements FrameworkEnricher {
     const managementCommands: ManagementCommandInfo[] = [];
     const templateTags: TemplateTagInfo[] = [];
     const serializers: Record<string, ModelInfo> = {};
-
-    // Collect URL patterns for view-to-route linking
     const allURLPatterns: URLPattern[] = [];
 
     for (const p of parsed) {
       if (p.file.language !== 'python') continue;
 
-      // ── Extract URL patterns ──
-      const urlPatterns = extractURLPatterns(p);
-      allURLPatterns.push(...urlPatterns);
-
-      // ── Extract signals ──
+      // ── Extract file-level data ──
+      allURLPatterns.push(...extractURLPatterns(p));
       signals.push(...extractSignals(p));
-
-      // ── Extract template tags ──
       templateTags.push(...extractTemplateTags(p));
-
-      // ── Extract management commands ──
       const mgmtCmd = extractManagementCommand(p);
       if (mgmtCmd) managementCommands.push(mgmtCmd);
 
       // ── Process classes ──
       for (const cls of p.classes) {
-        // Django Models
-        if (isDjangoModel(cls)) {
-          const fields = extractModelFields(cls);
-          const meta = extractMetaOptions(cls);
-          const isAbstract = meta?.abstract === true;
-          const isProxy = meta?.proxy === true;
+        const model = extractDjangoModelInfo(cls, p.file.relative);
+        if (model) models[cls.name] = model;
 
-          const model: ModelInfo = {
-            name: cls.name,
-            file: p.file.relative,
-            framework: 'django',
-            kind: isAbstract ? 'django_abstract_model' : isProxy ? 'django_proxy_model' : 'django_model',
-            extends: cls.extends || undefined,
-            fields,
-            meta,
-            relationships: fields
-              .filter((f) => f.related_model)
-              .map((f) => f.related_model!),
-            decorators: cls.decorators,
-          };
+        const cbv = extractClassBasedView(cls, p.file.relative);
+        if (cbv) routes.push(cbv);
 
-          // Check for custom managers
-          const managers = cls.properties
-            .filter((p) => p.type?.includes('Manager') || p.type?.includes('QuerySet'))
-            .map((p) => p.name);
-          if (managers.length > 0) model.managers = managers;
+        const mw = extractDjangoMiddleware(cls, p.file.relative);
+        if (mw) middleware[cls.name] = mw;
 
-          models[cls.name] = model;
-        }
+        const adminReg = extractDjangoAdmin(cls, p.file.relative);
+        if (adminReg) admin.push(adminReg);
 
-        // Django Views (Class-based)
-        if (isViewClass(cls)) {
-          const methods = getViewMethods(cls);
-          const httpMethods = methods.length > 0 ? methods : ['GET'];
+        const form = extractDjangoForm(cls, p.file.relative);
+        if (form) forms.push(form);
 
-          const route: RouteInfo = {
-            method: httpMethods,
-            path: '', // Will be linked from URL patterns
-            handler: cls.name,
-            file: p.file.relative,
-            decorators: cls.decorators,
-            params: [],
-            framework: 'django',
-            route_type: 'view',
-          };
-
-          // Check for auth decorators
-          const authDecorators = cls.decorators.filter((d) => {
-            const name = stripDecorator(d);
-            return name === 'login_required' || name === 'permission_required';
-          });
-          if (authDecorators.length > 0) {
-            route.auth = authDecorators.map((d) => stripDecorator(d));
-          }
-
-          routes.push(route);
-        }
-
-        // Django Middleware
-        if (isMiddlewareClass(cls)) {
-          const mw: MiddlewareInfo = {
-            name: cls.name,
-            file: p.file.relative,
-            framework: 'django',
-            type: 'class_middleware',
-            methods: cls.methods
-              .filter((m) => m.name.startsWith('process_') || m.name === '__call__')
-              .map((m) => m.name),
-          };
-          middleware[cls.name] = mw;
-        }
-
-        // Django Admin
-        if (isAdminClass(cls)) {
-          const options = extractAdminOptions(cls);
-          admin.push({
-            admin_class: cls.name,
-            model: '', // Will be resolved from register() calls
-            file: p.file.relative,
-            options,
-          });
-        }
-
-        // Django Forms
-        if (isDjangoForm(cls)) {
-          const fields = extractFormFields(cls);
-          const base = cls.extends?.split('.').pop() || cls.extends || '';
-          const isModelForm = base.includes('ModelForm');
-
-          const form: FormInfo = {
-            name: cls.name,
-            file: p.file.relative,
-            framework: 'django',
-            kind: isModelForm ? 'model_form' : 'form',
-            fields,
-            validators: cls.methods
-              .filter((m) => m.name.startsWith('clean_') || m.name === 'clean')
-              .map((m) => m.name),
-          };
-
-          forms.push(form);
-        }
-
-        // DRF Serializers
-        if (isSerializer(cls)) {
-          const fields = extractFormFields(cls); // Similar field structure
-          const base = cls.extends?.split('.').pop() || cls.extends || '';
-          const isModelSerializer = base.includes('ModelSerializer');
-
-          const serializer: ModelInfo = {
-            name: cls.name,
-            file: p.file.relative,
-            framework: 'django',
-            kind: 'django_model',
-            extends: cls.extends || undefined,
-            fields: fields,
-            relationships: [],
-            decorators: cls.decorators,
-          };
-
-          // Track as a special model-like entity
-          if (isModelSerializer) {
-            serializer.serializer_model = ''; // Would need Meta.model resolution
-          }
-
-          serializers[cls.name] = serializer;
-        }
+        const ser = extractSerializer(cls, p.file.relative);
+        if (ser) serializers[cls.name] = ser;
       }
 
       // ── Process functions (function-based views) ──
       for (const func of p.functions) {
-        if (isViewFunction(func, p.imports)) {
-          const route: RouteInfo = {
-            method: 'GET', // Default, overridden by decorators
-            path: '', // Will be linked from URL patterns
-            handler: func.name,
-            file: p.file.relative,
-            decorators: (func as any).decorators || [],
-            params: func.params
-              .filter((param) => param.name !== 'request' && param.name !== 'self')
-              .map((param) => ({
-                name: param.name,
-                type: param.type || 'any',
-                required: !param.optional,
-                location: 'path' as const,
-              })),
-            framework: 'django',
-            route_type: 'view',
-          };
-
-          // Extract HTTP methods from decorators
-          for (const d of (func as any).decorators || []) {
-            const name = stripDecorator(d);
-            if (name === 'api_view') {
-              const args = extractDecoratorArgs(d);
-              const methods = extractListArgs(args);
-              if (methods.length > 0) route.method = methods;
-            }
-            if (name === 'require_http_methods') {
-              const args = extractDecoratorArgs(d);
-              const methods = extractListArgs(args);
-              if (methods.length > 0) route.method = methods;
-            }
-            if (name === 'require_GET') route.method = 'GET';
-            if (name === 'require_POST') route.method = 'POST';
-          }
-
-          // Check for auth decorators
-          const authDecorators = ((func as any).decorators || []).filter((d: string) => {
-            const name = stripDecorator(d);
-            return name === 'login_required' || name === 'permission_required';
-          });
-          if (authDecorators.length > 0) {
-            route.auth = authDecorators.map((d: string) => stripDecorator(d));
-          }
-
-          routes.push(route);
-        }
+        const fbv = extractFunctionBasedView(func, p.imports, p.file.relative);
+        if (fbv) routes.push(fbv);
       }
     }
 
     // ── Link URL patterns to views ──
-    for (const pattern of allURLPatterns) {
-      if (pattern.is_include) continue;
-
-      // Find matching route by handler name
-      const handlerName = pattern.handler.split('.').pop()?.trim() || pattern.handler.trim();
-      const matchingRoute = routes.find(
-        (r) => r.handler === handlerName || r.handler.endsWith(`.${handlerName}`)
-      );
-
-      if (matchingRoute) {
-        matchingRoute.path = `/${pattern.path}`;
-        if (pattern.name) matchingRoute.url_name = pattern.name;
-        if (pattern.namespace) matchingRoute.namespace = pattern.namespace;
-      }
-    }
+    linkURLPatternsToRoutes(allURLPatterns, routes);
 
     // ── Link admin registrations to models ──
-    // Look for admin.site.register(Model, ModelAdmin) calls
-    for (const p of parsed) {
-      const allCalls = [
-        ...(p.moduleCalls || []),
-        ...p.functions.flatMap((f) => f.calls),
-      ];
-
-      for (const call of allCalls) {
-        if (call.includes('register') && call.includes('admin')) {
-          // Try to extract model and admin class names
-          const registerMatch = call.match(/register\s*\(\s*([A-Za-z_]+)\s*(?:,\s*([A-Za-z_]+))?\s*\)/);
-          if (registerMatch) {
-            const modelName = registerMatch[1];
-            const adminClassName = registerMatch[2];
-
-            // Mark model as admin-registered
-            if (models[modelName]) {
-              models[modelName].admin_registered = true;
-            }
-
-            // Link admin class to model
-            if (adminClassName) {
-              const adminEntry = admin.find((a) => a.admin_class === adminClassName);
-              if (adminEntry) adminEntry.model = modelName;
-            }
-          }
-        }
-      }
-    }
+    linkAdminToModels(parsed, admin, models);
 
     // ── Populate CodemapData ──
-    data.routes.push(...routes);
-    Object.assign(data.models, models, serializers);
-    Object.assign(data.middleware, middleware);
-
-    // Store extended data
-    (data as any).signals = [...((data as any).signals || []), ...signals];
-    (data as any).admin = [...((data as any).admin || []), ...admin];
-    (data as any).forms = [...((data as any).forms || []), ...forms];
-    (data as any).management_commands = [
-      ...((data as any).management_commands || []),
-      ...managementCommands,
-    ];
-    (data as any).template_tags = [...((data as any).template_tags || []), ...templateTags];
+    populateDjangoData(data, routes, models, serializers, middleware, signals, admin, forms, managementCommands, templateTags);
   }
 }

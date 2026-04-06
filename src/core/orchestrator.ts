@@ -78,6 +78,32 @@ export class Orchestrator {
     });
 
     // Step 5.5: Run framework enrichers
+    await this.runEnrichers(frameworks, codemapData, parsed);
+
+    // Step 6: Write output
+    this.logger.start('Writing output files...');
+    await this.writeOutput(codemapData);
+
+    // Step 7: Save health history
+    if (codemapData.health) {
+      const outputDir = join(this.config.root, this.config.output);
+      appendHistory(outputDir, codemapData.health, parsed.length, 0, 0);
+    }
+
+    // Print summary (visible in Claude Code hook output)
+    const totalClasses = Object.keys(codemapData.classes || {}).length;
+    const totalFunctions = Object.keys(codemapData.functions || {}).length;
+    const healthScore = codemapData.health ? ` | Health: ${codemapData.health.score}/100` : '';
+    this.logger.success(
+      `Codemap generated: ${parsed.length} files, ${totalClasses} classes, ${totalFunctions} functions${healthScore}`
+    );
+  }
+
+  private async runEnrichers(
+    frameworks: string[],
+    codemapData: CodemapData,
+    parsed: ParsedFile[]
+  ): Promise<void> {
     this.logger.start('Running framework enrichers...');
     const enrichers = getAllEnrichers();
     let enricherCount = 0;
@@ -100,24 +126,6 @@ export class Orchestrator {
         `Enriched: ${routeCount} routes, ${modelCount} models, ${mwCount} middleware`
       );
     }
-
-    // Step 6: Write output
-    this.logger.start('Writing output files...');
-    await this.writeOutput(codemapData);
-
-    // Step 7: Save health history
-    if (codemapData.health) {
-      const outputDir = join(this.config.root, this.config.output);
-      appendHistory(outputDir, codemapData.health, parsed.length, 0, 0);
-    }
-
-    // Print summary (visible in Claude Code hook output)
-    const totalClasses = Object.keys(codemapData.classes || {}).length;
-    const totalFunctions = Object.keys(codemapData.functions || {}).length;
-    const healthScore = codemapData.health ? ` | Health: ${codemapData.health.score}/100` : '';
-    this.logger.success(
-      `Codemap generated: ${parsed.length} files, ${totalClasses} classes, ${totalFunctions} functions${healthScore}`
-    );
   }
 
   private async parseFiles(files: ScannedFile[]): Promise<ParsedFile[]> {

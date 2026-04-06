@@ -75,31 +75,20 @@ interface GenerateInput {
   callGraph: CallGraph;
 }
 
-/**
- * Generate the root-level codemap JSON structure.
- */
-export function generateJson(input: GenerateInput): CodemapData {
-  const { config, parsed, frameworks, languages, importGraph, callGraph } = input;
-  const reverseCallGraph = buildReverseCallGraph(callGraph);
-
-  // Build project name from directory
-  const projectName = config.root.split('/').pop() || 'unknown';
-
-  // Use Object.create(null) for all maps to avoid prototype key collisions
-  // (e.g., a class named "constructor" or a function named "toString")
+function buildFileMap(parsed: ParsedFile[]): Record<string, any> {
   const files: Record<string, any> = Object.create(null);
   for (const p of parsed) {
     files[p.file.relative] = {
       language: p.file.language,
       hash: p.hash,
       exports: p.exports.map((e) => e.name),
-      imports: p.imports.map((i) => ({
-        from: i.from,
-        symbols: i.symbols,
-      })),
+      imports: p.imports.map((i) => ({ from: i.from, symbols: i.symbols })),
     };
   }
+  return files;
+}
 
+function buildClassMap(parsed: ParsedFile[], reverseCallGraph: ReverseCallGraph): Record<string, any> {
   const classes: Record<string, any> = Object.create(null);
   for (const p of parsed) {
     for (const cls of p.classes) {
@@ -116,7 +105,10 @@ export function generateJson(input: GenerateInput): CodemapData {
       };
     }
   }
+  return classes;
+}
 
+function buildFunctionMap(parsed: ParsedFile[], reverseCallGraph: ReverseCallGraph): Record<string, any> {
   const functions: Record<string, any> = Object.create(null);
   for (const p of parsed) {
     for (const func of p.functions) {
@@ -134,7 +126,10 @@ export function generateJson(input: GenerateInput): CodemapData {
       };
     }
   }
+  return functions;
+}
 
+function buildTypeMap(parsed: ParsedFile[]): Record<string, any> {
   const types: Record<string, any> = Object.create(null);
   for (const p of parsed) {
     for (const type of p.types) {
@@ -147,30 +142,30 @@ export function generateJson(input: GenerateInput): CodemapData {
       };
     }
   }
+  return types;
+}
 
+function buildEnvVarMap(parsed: ParsedFile[]): Record<string, { used_in: string[]; accessed_by: string[] }> {
   const envVars: Record<string, { used_in: string[]; accessed_by: string[] }> = Object.create(null);
   for (const p of parsed) {
     for (const envVar of p.envVars) {
-      if (!envVars[envVar]) {
-        envVars[envVar] = { used_in: [], accessed_by: [] };
-      }
+      if (!envVars[envVar]) envVars[envVar] = { used_in: [], accessed_by: [] };
       if (!envVars[envVar].used_in.includes(p.file.relative)) {
         envVars[envVar].used_in.push(p.file.relative);
       }
     }
   }
+  return envVars;
+}
 
-  // Detect entry points
+/**
+ * Generate the root-level codemap JSON structure.
+ */
+export function generateJson(input: GenerateInput): CodemapData {
+  const { config, parsed, frameworks, languages, importGraph, callGraph } = input;
+  const reverseCallGraph = buildReverseCallGraph(callGraph);
+  const projectName = config.root.split('/').pop() || 'unknown';
   const entryPoints = config.entry_points || detectEntryPoints(parsed);
-
-  // Extract dependency versions from package manifests
-  const dependencies = extractDependencies(config.root);
-
-  // Compute module-level coupling metrics
-  const moduleMetrics = computeModuleCoupling(importGraph, parsed);
-
-  // Compute health metrics
-  const health = computeHealth(parsed, reverseCallGraph, entryPoints);
 
   return {
     version: '1.0.0',
@@ -182,22 +177,19 @@ export function generateJson(input: GenerateInput): CodemapData {
       frameworks,
       entry_points: entryPoints,
     },
-    files,
-    classes,
-    functions,
-    types,
+    files: buildFileMap(parsed),
+    classes: buildClassMap(parsed, reverseCallGraph),
+    functions: buildFunctionMap(parsed, reverseCallGraph),
+    types: buildTypeMap(parsed),
     call_graph: callGraph,
     import_graph: importGraph,
-    dependencies,
-    config_dependencies: {
-      env_vars: envVars,
-    },
-    // TODO: Phase 3 — populate from framework adapters
+    dependencies: extractDependencies(config.root),
+    config_dependencies: { env_vars: buildEnvVarMap(parsed) },
     routes: [],
     models: {},
     middleware: {},
-    health,
-    module_metrics: moduleMetrics,
+    health: computeHealth(parsed, reverseCallGraph, entryPoints),
+    module_metrics: computeModuleCoupling(importGraph, parsed),
   };
 }
 
@@ -529,6 +521,31 @@ function extractNodeDependencies(root: string): {
 }
 
 /**
+ * Parse a single requirements file and add packages to the provided record.
+ */
+function parseRequirementsFile(
+  filePath: string,
+  type: 'production' | 'dev',
+  packages: Record<string, { version: string; type: 'production' | 'dev' | 'peer' }>
+): boolean {
+  if (!existsSync(filePath)) return false;
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
+      const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*([><=!~]+\s*.+)?$/);
+      if (match) {
+        packages[match[1]] = { version: match[2]?.trim() || '*', type };
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Extract Python dependencies from requirements.txt and requirements-dev.txt.
  * Handles both production and dev requirements.
  */
@@ -539,53 +556,11 @@ function extractPythonRequirements(root: string): {
   const packages: Record<string, { version: string; type: 'production' | 'dev' | 'peer' }> = {};
   const sources: string[] = [];
 
-  // requirements.txt — production dependencies
-  const reqPath = join(root, 'requirements.txt');
-  if (existsSync(reqPath)) {
-    try {
-      const content = readFileSync(reqPath, 'utf-8');
-      sources.push('requirements.txt');
-
-      for (const line of content.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
-
-        // Parse: package==1.0.0, package>=1.0.0, package~=1.0.0, package
-        const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*([><=!~]+\s*.+)?$/);
-        if (match) {
-          packages[match[1]] = {
-            version: match[2]?.trim() || '*',
-            type: 'production',
-          };
-        }
-      }
-    } catch {
-      // Ignore malformed requirements.txt
-    }
+  if (parseRequirementsFile(join(root, 'requirements.txt'), 'production', packages)) {
+    sources.push('requirements.txt');
   }
-
-  // requirements-dev.txt — development dependencies
-  const reqDevPath = join(root, 'requirements-dev.txt');
-  if (existsSync(reqDevPath)) {
-    try {
-      const content = readFileSync(reqDevPath, 'utf-8');
-      sources.push('requirements-dev.txt');
-
-      for (const line of content.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
-
-        const match = trimmed.match(/^([a-zA-Z0-9_.-]+)\s*([><=!~]+\s*.+)?$/);
-        if (match) {
-          packages[match[1]] = {
-            version: match[2]?.trim() || '*',
-            type: 'dev',
-          };
-        }
-      }
-    } catch {
-      // Ignore malformed requirements-dev.txt
-    }
+  if (parseRequirementsFile(join(root, 'requirements-dev.txt'), 'dev', packages)) {
+    sources.push('requirements-dev.txt');
   }
 
   return {

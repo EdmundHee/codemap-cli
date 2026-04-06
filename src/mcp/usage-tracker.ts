@@ -160,6 +160,117 @@ function getIntervalKey(date: Date): { key: string; label: string; intervalStart
   };
 }
 
+// --- Summary formatters (module-level to keep class method count low) ---
+
+function formatToolUtilizationTable(tools: [string, ToolMetrics][]): string[] {
+  const lines: string[] = [];
+  lines.push('## Tool Utilization\n');
+  lines.push('| Tool | Calls | Errors | Avg Latency | Min | Max | Avg Response | Total Response | Last Used |');
+  lines.push('|------|------:|-------:|------------:|----:|----:|-------------:|---------------:|-----------|');
+
+  for (const [name, m] of tools) {
+    const min = isFinite(m.minLatencyMs) ? `${m.minLatencyMs}ms` : '-';
+    const avgResp = m.totalResponseBytes > 0 ? formatBytes(m.avgResponseBytes) : '-';
+    const totalResp = m.totalResponseBytes > 0 ? formatBytes(m.totalResponseBytes) : '-';
+    lines.push(
+      `| ${name} | ${m.callCount} | ${m.errorCount} | ${m.avgLatencyMs}ms | ${min} | ${m.maxLatencyMs}ms | ${avgResp} | ${totalResp} | ${m.lastCalledAt ? new Date(m.lastCalledAt).toLocaleString() : '-'} |`
+    );
+  }
+
+  return lines;
+}
+
+function formatUtilizationDistribution(tools: [string, ToolMetrics][], totalCalls: number): string[] {
+  if (totalCalls <= 0) return [];
+  const lines: string[] = [];
+  lines.push('\n## Utilization Distribution\n');
+  for (const [name, m] of tools) {
+    const pct = ((m.callCount / totalCalls) * 100).toFixed(1);
+    const bar = '█'.repeat(Math.round(Number(pct) / 5)) + '░'.repeat(20 - Math.round(Number(pct) / 5));
+    lines.push(`- **${name}**: ${bar} ${pct}% (${m.callCount} calls)`);
+  }
+  return lines;
+}
+
+function formatParamInsights(tools: [string, ToolMetrics][]): string[] {
+  const paramInsights: string[] = [];
+  for (const [toolName, m] of tools) {
+    for (const [paramName, freqs] of Object.entries(m.paramFrequency)) {
+      const sorted = Object.entries(freqs).sort(([, a], [, b]) => b - a).slice(0, 5);
+      if (sorted.length > 0) {
+        paramInsights.push(`- **${toolName}.${paramName}**: ${sorted.map(([v, c]) => `\`${v}\` (${c})`).join(', ')}`);
+      }
+    }
+  }
+
+  if (paramInsights.length > 0) {
+    return ['\n## Most Queried Parameters\n', ...paramInsights];
+  }
+  return [];
+}
+
+function formatIntervalBreakdown(intervals: [string, IntervalBucket][]): string[] {
+  if (intervals.length === 0) return [];
+  const lines: string[] = [];
+  lines.push('\n## 5-Hour Interval Breakdown\n');
+  lines.push('| Interval | Total | Errors | Tools Breakdown |');
+  lines.push('|----------|------:|-------:|-----------------|');
+
+  for (const [, bucket] of intervals) {
+    const toolBreakdown = Object.entries(bucket.toolCalls)
+      .sort(([, a], [, b]) => b - a)
+      .map(([name, count]) => {
+        const errors = bucket.toolErrors[name] || 0;
+        return errors > 0 ? `${name}: ${count} (${errors} err)` : `${name}: ${count}`;
+      })
+      .join(', ');
+    lines.push(
+      `| ${bucket.label} | ${bucket.totalCalls} | ${bucket.totalErrors} | ${toolBreakdown} |`
+    );
+  }
+
+  return lines;
+}
+
+function formatToolHeatmap(intervals: [string, IntervalBucket][], allToolNames: Set<string>): string[] {
+  if (allToolNames.size === 0 || intervals.length <= 1) return [];
+  const lines: string[] = [];
+  lines.push('\n## Tool Activity Heatmap (per interval)\n');
+
+  const shortLabels = intervals.map(([, b]) => {
+    const parts = b.label.split(' ');
+    return parts.length > 1 ? parts[1] : parts[0];
+  });
+  lines.push('| Tool | ' + shortLabels.join(' | ') + ' |');
+  lines.push('|------|' + shortLabels.map(() => '-----:').join('|') + '|');
+
+  for (const tool of [...allToolNames].sort()) {
+    const cells = intervals.map(([, bucket]) => {
+      const count = bucket.toolCalls[tool] || 0;
+      return count > 0 ? String(count) : '·';
+    });
+    lines.push(`| ${tool} | ${cells.join(' | ')} |`);
+  }
+
+  return lines;
+}
+
+function formatSessionHistory(sessions: SessionEntry[]): string[] {
+  const recentSessions = sessions.slice(-10).reverse();
+  if (recentSessions.length <= 1) return [];
+  const lines: string[] = [];
+  lines.push('\n## Recent Sessions\n');
+  lines.push('| Started | Calls | Top Tool |');
+  lines.push('|---------|------:|----------|');
+  for (const sess of recentSessions) {
+    const topTool = Object.entries(sess.toolCalls).sort(([, a], [, b]) => b - a)[0];
+    lines.push(
+      `| ${new Date(sess.startedAt).toLocaleString()} | ${sess.totalCalls} | ${topTool ? `${topTool[0]} (${topTool[1]})` : '-'} |`
+    );
+  }
+  return lines;
+}
+
 // --- UsageTracker class ---
 
 export class UsageTracker {
@@ -323,108 +434,25 @@ export class UsageTracker {
       return lines.join('\n');
     }
 
-    lines.push('## Tool Utilization\n');
-    lines.push('| Tool | Calls | Errors | Avg Latency | Min | Max | Avg Response | Total Response | Last Used |');
-    lines.push('|------|------:|-------:|------------:|----:|----:|-------------:|---------------:|-----------|');
-
-    for (const [name, m] of tools) {
-      const min = isFinite(m.minLatencyMs) ? `${m.minLatencyMs}ms` : '-';
-      const avgResp = m.totalResponseBytes > 0 ? formatBytes(m.avgResponseBytes) : '-';
-      const totalResp = m.totalResponseBytes > 0 ? formatBytes(m.totalResponseBytes) : '-';
-      lines.push(
-        `| ${name} | ${m.callCount} | ${m.errorCount} | ${m.avgLatencyMs}ms | ${min} | ${m.maxLatencyMs}ms | ${avgResp} | ${totalResp} | ${m.lastCalledAt ? new Date(m.lastCalledAt).toLocaleString() : '-'} |`
-      );
-    }
-
-    // Utilization percentages
-    if (s.totalCalls > 0) {
-      lines.push('\n## Utilization Distribution\n');
-      for (const [name, m] of tools) {
-        const pct = ((m.callCount / s.totalCalls) * 100).toFixed(1);
-        const bar = '█'.repeat(Math.round(Number(pct) / 5)) + '░'.repeat(20 - Math.round(Number(pct) / 5));
-        lines.push(`- **${name}**: ${bar} ${pct}% (${m.callCount} calls)`);
-      }
-    }
-
-    // Top parameters
-    const paramInsights: string[] = [];
-    for (const [toolName, m] of tools) {
-      for (const [paramName, freqs] of Object.entries(m.paramFrequency)) {
-        const sorted = Object.entries(freqs).sort(([, a], [, b]) => b - a).slice(0, 5);
-        if (sorted.length > 0) {
-          paramInsights.push(`- **${toolName}.${paramName}**: ${sorted.map(([v, c]) => `\`${v}\` (${c})`).join(', ')}`);
-        }
-      }
-    }
-
-    if (paramInsights.length > 0) {
-      lines.push('\n## Most Queried Parameters\n');
-      lines.push(...paramInsights);
-    }
+    lines.push(...formatToolUtilizationTable(tools));
+    lines.push(...formatUtilizationDistribution(tools, s.totalCalls));
+    lines.push(...formatParamInsights(tools));
 
     // 5-hour interval breakdown (last 20 intervals)
     const intervalEntries = Object.entries(s.intervals)
       .sort(([a], [b]) => a.localeCompare(b))
       .slice(-20);
 
-    if (intervalEntries.length > 0) {
-      lines.push('\n## 5-Hour Interval Breakdown\n');
-      lines.push('| Interval | Total | Errors | Tools Breakdown |');
-      lines.push('|----------|------:|-------:|-----------------|');
+    lines.push(...formatIntervalBreakdown(intervalEntries));
 
-      for (const [, bucket] of intervalEntries) {
-        const toolBreakdown = Object.entries(bucket.toolCalls)
-          .sort(([, a], [, b]) => b - a)
-          .map(([name, count]) => {
-            const errors = bucket.toolErrors[name] || 0;
-            return errors > 0 ? `${name}: ${count} (${errors} err)` : `${name}: ${count}`;
-          })
-          .join(', ');
-        lines.push(
-          `| ${bucket.label} | ${bucket.totalCalls} | ${bucket.totalErrors} | ${toolBreakdown} |`
-        );
-      }
-
-      // Show per-tool heatmap across intervals
-      const allToolNames = new Set<string>();
-      for (const [, bucket] of intervalEntries) {
-        for (const tool of Object.keys(bucket.toolCalls)) allToolNames.add(tool);
-      }
-
-      if (allToolNames.size > 0 && intervalEntries.length > 1) {
-        lines.push('\n## Tool Activity Heatmap (per interval)\n');
-
-        // Header row: interval labels shortened
-        const shortLabels = intervalEntries.map(([, b]) => {
-          const parts = b.label.split(' ');
-          return parts.length > 1 ? parts[1] : parts[0];
-        });
-        lines.push('| Tool | ' + shortLabels.join(' | ') + ' |');
-        lines.push('|------|' + shortLabels.map(() => '-----:').join('|') + '|');
-
-        for (const tool of [...allToolNames].sort()) {
-          const cells = intervalEntries.map(([, bucket]) => {
-            const count = bucket.toolCalls[tool] || 0;
-            return count > 0 ? String(count) : '·';
-          });
-          lines.push(`| ${tool} | ${cells.join(' | ')} |`);
-        }
-      }
+    // Collect all tool names across intervals for heatmap
+    const allToolNames = new Set<string>();
+    for (const [, bucket] of intervalEntries) {
+      for (const tool of Object.keys(bucket.toolCalls)) allToolNames.add(tool);
     }
+    lines.push(...formatToolHeatmap(intervalEntries, allToolNames));
 
-    // Session history (last 10)
-    const recentSessions = s.sessions.slice(-10).reverse();
-    if (recentSessions.length > 1) {
-      lines.push('\n## Recent Sessions\n');
-      lines.push('| Started | Calls | Top Tool |');
-      lines.push('|---------|------:|----------|');
-      for (const sess of recentSessions) {
-        const topTool = Object.entries(sess.toolCalls).sort(([, a], [, b]) => b - a)[0];
-        lines.push(
-          `| ${new Date(sess.startedAt).toLocaleString()} | ${sess.totalCalls} | ${topTool ? `${topTool[0]} (${topTool[1]})` : '-'} |`
-        );
-      }
-    }
+    lines.push(...formatSessionHistory(s.sessions));
 
     return lines.join('\n');
   }

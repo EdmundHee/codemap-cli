@@ -424,6 +424,99 @@ function registerHealthTools(
   );
 }
 
+function formatEntityRoutes(data: CodemapData, framework?: string, filter?: string): string[] {
+  const lines: string[] = [];
+  const routes = getRoutes(data, {
+    framework: framework,
+    path: filter,
+  });
+  if (routes.length > 0) {
+    lines.push(`## Routes (${routes.length})\n`);
+    for (const r of routes) {
+      const methods = Array.isArray(r.method) ? r.method.join(',') : r.method;
+      const auth = r.auth ? ` [auth: ${r.auth.join(', ')}]` : '';
+      const tags = r.tags ? ` [tags: ${r.tags.join(', ')}]` : '';
+      lines.push(`${methods} ${r.path} → ${r.handler}${auth}${tags} [${r.file}]`);
+    }
+    lines.push('');
+  }
+  return lines;
+}
+
+function formatEntityModels(data: CodemapData, framework?: string, filter?: string): string[] {
+  const lines: string[] = [];
+  const models = getModels(data, { framework });
+  const filtered = filter
+    ? models.filter((m) => m.name.toLowerCase().includes(filter.toLowerCase()))
+    : models;
+  if (filtered.length > 0) {
+    lines.push(`## Models (${filtered.length})\n`);
+    for (const m of filtered) {
+      lines.push(`**${m.kind}: ${m.name}** [${m.file}]`);
+      if (m.fields?.length) {
+        const fieldStrs = m.fields.map((f: any) => {
+          const rel = f.relationship ? ` → ${f.related_model || '?'}` : '';
+          const req = f.required ? '' : '?';
+          return `${f.name}${req}: ${f.type}${rel}`;
+        });
+        lines.push(`  fields: ${fieldStrs.join(', ')}`);
+      }
+      if (m.relationships?.length) {
+        lines.push(`  refs: ${m.relationships.join(', ')}`);
+      }
+    }
+    lines.push('');
+  }
+  return lines;
+}
+
+function formatEntityMiddleware(data: CodemapData, framework?: string): string[] {
+  const lines: string[] = [];
+  const mws = getMiddleware(data, { framework });
+  if (mws.length > 0) {
+    lines.push(`## Middleware (${mws.length})\n`);
+    for (const mw of mws) {
+      const methods = mw.methods?.length ? ` [${mw.methods.join(', ')}]` : '';
+      lines.push(`${mw.type}: ${mw.name}${methods} [${mw.file}]`);
+    }
+    lines.push('');
+  }
+  return lines;
+}
+
+function handleFrameworkQuery(
+  data: CodemapData,
+  framework?: string,
+  entity?: string,
+  filter?: string
+) {
+  if (framework && (!entity || entity === 'all')) {
+    const fwData = getFrameworkData(data, framework);
+    if (!fwData.routes.length && !fwData.models.length && !fwData.middleware.length) {
+      return mdResult(`No enriched data found for framework "${framework}". Make sure to regenerate: \`codemap generate\``);
+    }
+    return mdResult(formatFrameworkData(fwData));
+  }
+
+  const entityType = entity || 'all';
+  const lines: string[] = [];
+
+  if (entityType === 'routes' || entityType === 'all') {
+    lines.push(...formatEntityRoutes(data, framework, filter));
+  }
+  if (entityType === 'models' || entityType === 'all') {
+    lines.push(...formatEntityModels(data, framework, filter));
+  }
+  if (entityType === 'middleware' || entityType === 'all') {
+    lines.push(...formatEntityMiddleware(data, framework));
+  }
+
+  if (lines.length === 0) {
+    return mdResult('No framework data found. Run `codemap generate` to populate.');
+  }
+  return mdResult(lines.join('\n'));
+}
+
 function registerFrameworkTools(
   server: McpServer,
   projects: ProjectEntry[],
@@ -457,80 +550,7 @@ function registerFrameworkTools(
     tracked('codemap_framework', async ({ framework, entity, filter, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
-      const { data } = resolved;
-
-      // If specific framework requested, get complete framework view
-      if (framework && (!entity || entity === 'all')) {
-        const fwData = getFrameworkData(data, framework);
-        if (!fwData.routes.length && !fwData.models.length && !fwData.middleware.length) {
-          return mdResult(`No enriched data found for framework "${framework}". Make sure to regenerate: \`codemap generate\``);
-        }
-        return mdResult(formatFrameworkData(fwData));
-      }
-
-      // Entity-specific queries
-      const entityType = entity || 'all';
-      const lines: string[] = [];
-
-      if (entityType === 'routes' || entityType === 'all') {
-        const routes = getRoutes(data, {
-          framework: framework,
-          path: filter,
-        });
-        if (routes.length > 0) {
-          lines.push(`## Routes (${routes.length})\n`);
-          for (const r of routes) {
-            const methods = Array.isArray(r.method) ? r.method.join(',') : r.method;
-            const auth = r.auth ? ` [auth: ${r.auth.join(', ')}]` : '';
-            const tags = r.tags ? ` [tags: ${r.tags.join(', ')}]` : '';
-            lines.push(`${methods} ${r.path} → ${r.handler}${auth}${tags} [${r.file}]`);
-          }
-          lines.push('');
-        }
-      }
-
-      if (entityType === 'models' || entityType === 'all') {
-        const models = getModels(data, { framework });
-        const filtered = filter
-          ? models.filter((m) => m.name.toLowerCase().includes(filter.toLowerCase()))
-          : models;
-        if (filtered.length > 0) {
-          lines.push(`## Models (${filtered.length})\n`);
-          for (const m of filtered) {
-            lines.push(`**${m.kind}: ${m.name}** [${m.file}]`);
-            if (m.fields?.length) {
-              const fieldStrs = m.fields.map((f: any) => {
-                const rel = f.relationship ? ` → ${f.related_model || '?'}` : '';
-                const req = f.required ? '' : '?';
-                return `${f.name}${req}: ${f.type}${rel}`;
-              });
-              lines.push(`  fields: ${fieldStrs.join(', ')}`);
-            }
-            if (m.relationships?.length) {
-              lines.push(`  refs: ${m.relationships.join(', ')}`);
-            }
-          }
-          lines.push('');
-        }
-      }
-
-      if (entityType === 'middleware' || entityType === 'all') {
-        const mws = getMiddleware(data, { framework });
-        if (mws.length > 0) {
-          lines.push(`## Middleware (${mws.length})\n`);
-          for (const mw of mws) {
-            const methods = mw.methods?.length ? ` [${mw.methods.join(', ')}]` : '';
-            lines.push(`${mw.type}: ${mw.name}${methods} [${mw.file}]`);
-          }
-          lines.push('');
-        }
-      }
-
-      if (lines.length === 0) {
-        return mdResult('No framework data found. Run `codemap generate` to populate.');
-      }
-
-      return mdResult(lines.join('\n'));
+      return handleFrameworkQuery(resolved.data, framework, entity, filter);
     })
   );
 

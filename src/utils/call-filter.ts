@@ -90,67 +90,53 @@ export function filterCalls(rawCalls: string[]): string[] {
   return result;
 }
 
-function normalizeCall(call: string): string | null {
-  // Strip whitespace
-  let normalized = call.trim();
+function isChainedBuiltin(normalized: string): boolean {
+  const lastDot = normalized.lastIndexOf('.');
+  if (lastDot === -1) return false;
+  const lastSegment = normalized.slice(lastDot + 1);
+  if (!BUILTIN_CALLS.has(lastSegment) || normalized.includes('(')) return false;
+  const prefix = normalized.slice(0, lastDot);
+  return prefix.includes('.') || prefix.includes('(') || prefix.includes('[');
+}
 
-  // Skip empty or single-char calls
+function collapseMultiline(normalized: string): string | null {
+  const firstLine = normalized.split('\n')[0].trim();
+  return firstLine.length > 2 ? firstLine : null;
+}
+
+function truncateLongCall(normalized: string): string {
+  const parenIdx = normalized.indexOf('(');
+  if (parenIdx !== -1 && parenIdx < 80) {
+    return normalized.slice(0, parenIdx);
+  }
+  return normalized.slice(0, 80);
+}
+
+function extractRootCall(normalized: string): string {
+  const chainMatch = normalized.match(/^([a-zA-Z_][\w.]*?)(\(|$)/);
+  return chainMatch ? chainMatch[1] : normalized;
+}
+
+function normalizeCall(call: string): string | null {
+  let normalized = call.trim();
   if (normalized.length <= 1) return null;
 
-  // Strip this./self. prefix
   normalized = normalized.replace(/^(this|self)\./, '');
-
-  // Skip if it's a builtin
   if (BUILTIN_CALLS.has(normalized)) return null;
+  if (isChainedBuiltin(normalized)) return null;
 
-  // Skip if the last segment (after last dot) is a builtin
-  const lastDot = normalized.lastIndexOf('.');
-  if (lastDot !== -1) {
-    const lastSegment = normalized.slice(lastDot + 1);
-    // Only filter if the last segment is a pure builtin method name
-    // (not something like UserService.filter which is a real method)
-    if (BUILTIN_CALLS.has(lastSegment) && !normalized.includes('(')) {
-      // Check if it's a chained builtin like `items.filter` vs `UserService.filter`
-      const prefix = normalized.slice(0, lastDot);
-      if (prefix.includes('.') || prefix.includes('(') || prefix.includes('[')) {
-        return null;
-      }
-    }
-  }
-
-  // Skip multiline calls (inline lambdas captured as calls)
   if (normalized.includes('\n')) {
-    // Extract just the first meaningful part
-    const firstLine = normalized.split('\n')[0].trim();
-    if (firstLine.length > 2) {
-      normalized = firstLine;
-    } else {
-      return null;
-    }
+    const collapsed = collapseMultiline(normalized);
+    if (!collapsed) return null;
+    normalized = collapsed;
   }
 
-  // Skip very long chained expressions — extract the root call
   if (normalized.length > 100) {
-    // Try to extract the first meaningful call
-    const parenIdx = normalized.indexOf('(');
-    if (parenIdx !== -1 && parenIdx < 80) {
-      // Keep up to the first call: "foo.bar(..." → "foo.bar"
-      normalized = normalized.slice(0, parenIdx);
-    } else {
-      // Just truncate
-      normalized = normalized.slice(0, 80);
-    }
+    normalized = truncateLongCall(normalized);
   }
 
-  // Remove argument content from calls: foo.bar(x, y) → foo.bar
-  // This collapses chains like createHash('md5').update(content).digest('hex')
-  // into just: createHash
-  const chainMatch = normalized.match(/^([a-zA-Z_][\w.]*?)(\(|$)/);
-  if (chainMatch) {
-    normalized = chainMatch[1];
-  }
+  normalized = extractRootCall(normalized);
 
-  // Skip if it's now empty or a builtin after normalization
   if (!normalized || normalized.length <= 1) return null;
   if (BUILTIN_CALLS.has(normalized)) return null;
 

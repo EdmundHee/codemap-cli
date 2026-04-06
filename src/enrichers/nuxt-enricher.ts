@@ -204,43 +204,40 @@ function extractPageMeta(parsed: ParsedFile): { layout?: string; middleware?: st
   return meta;
 }
 
+const HTTP_METHOD_EXPORTS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options']);
+
+function detectMethodsFromExports(parsed: ParsedFile): string[] {
+  const methods: string[] = [];
+  for (const func of parsed.functions) {
+    const name = func.name.toLowerCase();
+    if (name === 'default' || name === 'handler') methods.push('ALL');
+  }
+  for (const exp of parsed.exports) {
+    const name = exp.name.toLowerCase();
+    if (HTTP_METHOD_EXPORTS.has(name)) methods.push(name.toUpperCase());
+  }
+  return methods;
+}
+
+function detectMethodsFromEventHandlers(parsed: ParsedFile): boolean {
+  for (const func of parsed.functions) {
+    if (func.calls.includes('defineEventHandler') || func.calls.includes('eventHandler')) return true;
+  }
+  for (const call of parsed.moduleCalls || []) {
+    if (call.includes('defineEventHandler') || call.includes('eventHandler')) return true;
+  }
+  return false;
+}
+
 /**
  * Extract HTTP method handlers from a server API file.
  * Nuxt server routes export defineEventHandler or method-specific handlers.
  */
 function extractServerMethods(parsed: ParsedFile): string[] {
-  const methods: string[] = [];
-
-  for (const func of parsed.functions) {
-    const name = func.name.toLowerCase();
-    if (name === 'default' || name === 'handler') {
-      // Default export → handles all methods
-      methods.push('ALL');
-    }
+  const methods = detectMethodsFromExports(parsed);
+  if (methods.length === 0 && detectMethodsFromEventHandlers(parsed)) {
+    methods.push('ALL');
   }
-
-  // Check for method-specific exports
-  for (const exp of parsed.exports) {
-    const name = exp.name.toLowerCase();
-    if (['get', 'post', 'put', 'delete', 'patch', 'head', 'options'].includes(name)) {
-      methods.push(name.toUpperCase());
-    }
-  }
-
-  // Check for defineEventHandler in calls
-  for (const func of parsed.functions) {
-    if (func.calls.includes('defineEventHandler') || func.calls.includes('eventHandler')) {
-      if (methods.length === 0) methods.push('ALL');
-    }
-  }
-
-  // Check module-level calls
-  for (const call of parsed.moduleCalls || []) {
-    if (call.includes('defineEventHandler') || call.includes('eventHandler')) {
-      if (methods.length === 0) methods.push('ALL');
-    }
-  }
-
   return methods.length > 0 ? methods : ['ALL'];
 }
 
@@ -330,6 +327,355 @@ function extractPluginProvides(parsed: ParsedFile): string[] {
   return provides;
 }
 
+// ─── Extracted Phase Helpers ──────────────────────────────────────────────
+
+/**
+ * Extract page route info from a parsed file in pages/ directory.
+ * Converts file-based route to RouteInfo with params, meta, layout, and
+ * tracks layout/component usage in the provided maps.
+ */
+function extractPageRoute(
+  p: ParsedFile,
+  layoutUsage: Record<string, string[]>,
+  componentUsage: Record<string, string[]>
+): RouteInfo {
+  const filePath = p.file.relative;
+  const routePath = filePathToRoute(filePath);
+  const pageMeta = extractPageMeta(p);
+  const templateComponents = extractTemplateComponents(p);
+
+  const route: RouteInfo = {
+    method: 'GET',
+    path: routePath,
+    handler: filePath,
+    file: filePath,
+    decorators: [],
+    params: [],
+    framework: 'nuxt',
+    route_type: 'page',
+    layout: pageMeta.layout || 'default',
+    middleware: pageMeta.middleware,
+    components: templateComponents,
+  };
+
+  // Extract route params from path
+  const paramMatches = routePath.matchAll(/:([^(/]+)/g);
+  for (const match of paramMatches) {
+    const paramName = match[1].replace('?', '');
+    route.params.push({
+      name: paramName,
+      type: 'string',
+      required: !match[1].endsWith('?'),
+      location: 'path',
+    });
+  }
+
+  // Track layout usage
+  const layout = pageMeta.layout || 'default';
+  if (!layoutUsage[layout]) layoutUsage[layout] = [];
+  layoutUsage[layout].push(filePath);
+
+  // Track component usage
+  for (const comp of templateComponents) {
+    if (!componentUsage[comp]) componentUsage[comp] = [];
+    componentUsage[comp].push(filePath);
+  }
+
+  return route;
+}
+
+/**
+ * Extract server API routes from a parsed file in server/api/ or server/routes/.
+ * Returns one RouteInfo per HTTP method.
+ */
+function extractServerAPIRoutes(p: ParsedFile): RouteInfo[] {
+  const filePath = p.file.relative;
+  const routePath = serverPathToRoute(filePath);
+  const methods = extractServerMethods(p);
+
+  return methods.map((method) => ({
+    method,
+    path: routePath,
+    handler: filePath,
+    file: filePath,
+    decorators: [],
+    params: [],
+    framework: 'nuxt' as const,
+    route_type: 'api' as const,
+  }));
+}
+
+/**
+ * Extract composable or Pinia store model entries from a parsed file in composables/.
+ * Returns a record of ModelInfo entries keyed by name.
+ */
+function extractComposableOrStore(p: ParsedFile): Record<string, ModelInfo> {
+  const filePath = p.file.relative;
+  const composableName = composableNameFromPath(filePath);
+  const result: Record<string, ModelInfo> = {};
+
+  if (isPiniaStore(p)) {
+    // Pinia store
+    const storeInfo = extractStoreInfo(p);
+    result[composableName] = {
+      name: composableName,
+      file: filePath,
+      framework: 'nuxt',
+      kind: 'store',
+      fields: Object.entries(storeInfo.state).map(([name, type]) => ({
+        name,
+        type,
+        required: true,
+      })),
+      relationships: [],
+      state: storeInfo.state,
+      methods: storeInfo.methods,
+    };
+  } else {
+    // Regular composable
+    const exportedFuncs = p.functions.filter((f) => f.exported || f.name.startsWith('use'));
+
+    for (const func of exportedFuncs) {
+      result[func.name] = {
+        name: func.name,
+        file: filePath,
+        framework: 'nuxt',
+        kind: 'composable',
+        fields: func.params.map((param) => ({
+          name: param.name,
+          type: param.type || 'any',
+          required: !param.optional,
+        })),
+        relationships: [],
+        methods: func.calls.filter((c) => !c.includes('.')),
+      };
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Extract route middleware info from a file in middleware/ directory.
+ * Detects global middleware via .global. suffix.
+ */
+function extractRouteMiddleware(filePath: string): MiddlewareInfo {
+  const mwName = filePath
+    .replace(/^(?:src\/)?middleware\//, '')
+    .replace(/\.(?:ts|js|mjs)$/, '')
+    .replace(/\.global$/, '');
+
+  const isGlobal = filePath.includes('.global.');
+
+  return {
+    name: mwName,
+    file: filePath,
+    framework: 'nuxt',
+    type: 'route_middleware',
+    global: isGlobal,
+  };
+}
+
+/**
+ * Extract server middleware info from a file in server/middleware/.
+ */
+function extractServerMiddleware(filePath: string): MiddlewareInfo {
+  const mwName = filePath
+    .replace(/^(?:src\/)?server\/middleware\//, '')
+    .replace(/\.(?:ts|js|mjs)$/, '');
+
+  return {
+    name: mwName,
+    file: filePath,
+    framework: 'nuxt',
+    type: 'server_middleware',
+  };
+}
+
+function extractPropsFromFunctions(functions: FunctionInfo[]): NonNullable<ComponentInfo['props']> {
+  const props: NonNullable<ComponentInfo['props']> = [];
+  for (const func of functions) {
+    if (func.name === '__props' || func.calls.includes('defineProps')) {
+      for (const param of func.params) {
+        props.push({ name: param.name, type: param.type || 'any', required: !param.optional });
+      }
+    }
+  }
+  return props;
+}
+
+function extractPropsFromTypes(types: { name: string; properties: { name: string; type?: string; optional?: boolean }[] }[]): NonNullable<ComponentInfo['props']> {
+  const props: NonNullable<ComponentInfo['props']> = [];
+  for (const type of types) {
+    if (type.name === 'Props' || type.name.endsWith('Props')) {
+      for (const prop of type.properties) {
+        props.push({ name: prop.name, type: prop.type || 'any', required: !prop.optional });
+      }
+    }
+  }
+  return props;
+}
+
+/**
+ * Extract component info with props and emits from a parsed file in components/.
+ * Detects defineProps/defineEmits patterns and prop interfaces.
+ */
+function extractComponentWithProps(
+  p: ParsedFile,
+  filePath: string,
+  componentUsage: Record<string, string[]>
+): ComponentInfo {
+  const compName = componentNameFromPath(filePath);
+  const props = [...extractPropsFromFunctions(p.functions), ...extractPropsFromTypes(p.types)];
+  const emits: string[] = [];
+
+  return {
+    name: compName,
+    file: filePath,
+    auto_imported: true,
+    props: props.length > 0 ? props : undefined,
+    emits: emits.length > 0 ? emits : undefined,
+    used_by: componentUsage[compName] || [],
+  };
+}
+
+/**
+ * Extract type/interface definitions as ModelInfo entries from a parsed file
+ * in types/ or interfaces/ directories.
+ */
+function extractTypeDefinitions(p: ParsedFile): Record<string, ModelInfo> {
+  const filePath = p.file.relative;
+  const result: Record<string, ModelInfo> = {};
+
+  for (const type of p.types) {
+    if (type.exported) {
+      result[type.name] = {
+        name: type.name,
+        file: filePath,
+        framework: 'nuxt',
+        kind: type.kind === 'interface' ? 'interface' : 'type_alias',
+        fields: type.properties.map((prop) => ({
+          name: prop.name,
+          type: prop.type || 'any',
+          required: !prop.optional,
+        })),
+        relationships: [],
+      };
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Extract a Pinia store model from a file in a dedicated stores/ directory.
+ * Returns null if the file is not a Pinia store.
+ */
+function extractDedicatedStore(p: ParsedFile, filePath: string): ModelInfo | null {
+  if (!isPiniaStore(p)) return null;
+
+  const storeName = filePath.split('/').pop()?.replace(/\.(?:ts|js)$/, '') || '';
+  const storeInfo = extractStoreInfo(p);
+  return {
+    name: storeName,
+    file: filePath,
+    framework: 'nuxt',
+    kind: 'store',
+    fields: Object.entries(storeInfo.state).map(([name, type]) => ({
+      name,
+      type,
+      required: true,
+    })),
+    relationships: [],
+    state: storeInfo.state,
+    methods: storeInfo.methods,
+  };
+}
+
+/**
+ * Extract a plugin entry from a file in plugins/ directory.
+ */
+function extractPluginEntry(p: ParsedFile, filePath: string): PluginInfo {
+  const pluginName = pluginNameFromPath(filePath);
+  const mode = pluginMode(filePath);
+  const provides = extractPluginProvides(p);
+
+  return {
+    name: pluginName,
+    file: filePath,
+    framework: 'nuxt',
+    mode,
+    provides: provides.length > 0 ? provides : undefined,
+  };
+}
+
+/**
+ * Populate the CodemapData output with all collected Nuxt entities.
+ */
+function populateCodemapData(
+  data: CodemapData,
+  routes: RouteInfo[],
+  models: Record<string, ModelInfo>,
+  middlewareMap: Record<string, MiddlewareInfo>,
+  plugins: PluginInfo[],
+  layouts: LayoutInfo[],
+  components: ComponentInfo[]
+): void {
+  data.routes.push(...routes);
+  Object.assign(data.models, models);
+  Object.assign(data.middleware, middlewareMap);
+
+  (data as any).plugins = [...((data as any).plugins || []), ...plugins];
+  (data as any).layouts = [...((data as any).layouts || []), ...layouts];
+  (data as any).components = [...((data as any).components || []), ...components];
+}
+
+function classifyAndExtractNuxtFile(
+  p: ParsedFile,
+  routes: RouteInfo[],
+  models: Record<string, ModelInfo>,
+  middlewareMap: Record<string, MiddlewareInfo>,
+  layouts: LayoutInfo[],
+  plugins: PluginInfo[],
+  components: ComponentInfo[],
+  layoutUsage: Record<string, string[]>,
+  componentUsage: Record<string, string[]>
+): void {
+  const filePath = p.file.relative;
+
+  if (NUXT_DIRS.pages.test(filePath)) {
+    routes.push(extractPageRoute(p, layoutUsage, componentUsage));
+  }
+  if (NUXT_DIRS.serverApi.test(filePath) || NUXT_DIRS.serverRoutes.test(filePath)) {
+    routes.push(...extractServerAPIRoutes(p));
+  }
+  if (NUXT_DIRS.composables.test(filePath)) {
+    Object.assign(models, extractComposableOrStore(p));
+  }
+  if (NUXT_DIRS.stores.test(filePath) && !NUXT_DIRS.composables.test(filePath)) {
+    const storeModel = extractDedicatedStore(p, filePath);
+    if (storeModel) models[storeModel.name] = storeModel;
+  }
+  if (NUXT_DIRS.middleware.test(filePath)) {
+    const mw = extractRouteMiddleware(filePath);
+    middlewareMap[mw.name] = mw;
+  }
+  if (NUXT_DIRS.serverMiddleware.test(filePath)) {
+    const mw = extractServerMiddleware(filePath);
+    middlewareMap[`server:${mw.name}`] = mw;
+  }
+  if (NUXT_DIRS.layouts.test(filePath)) {
+    const layoutName = layoutNameFromPath(filePath);
+    layouts.push({ name: layoutName, file: filePath, used_by: layoutUsage[layoutName] || [] });
+  }
+  if (NUXT_DIRS.plugins.test(filePath)) {
+    plugins.push(extractPluginEntry(p, filePath));
+  }
+  if (NUXT_DIRS.components.test(filePath)) {
+    components.push(extractComponentWithProps(p, filePath, componentUsage));
+  }
+}
+
 // ─── Nuxt Enricher ─────────────────────────────────────────────────────────
 
 export class NuxtEnricher implements FrameworkEnricher {
@@ -358,247 +704,7 @@ export class NuxtEnricher implements FrameworkEnricher {
     const componentUsage: Record<string, string[]> = {};
 
     for (const p of parsed) {
-      const filePath = p.file.relative;
-
-      // ── Pages (file-based routing) ──
-      if (NUXT_DIRS.pages.test(filePath)) {
-        const routePath = filePathToRoute(filePath);
-        const pageMeta = extractPageMeta(p);
-        const templateComponents = extractTemplateComponents(p);
-
-        const route: RouteInfo = {
-          method: 'GET',
-          path: routePath,
-          handler: filePath,
-          file: filePath,
-          decorators: [],
-          params: [],
-          framework: 'nuxt',
-          route_type: 'page',
-          layout: pageMeta.layout || 'default',
-          middleware: pageMeta.middleware,
-          components: templateComponents,
-        };
-
-        // Extract route params from path
-        const paramMatches = routePath.matchAll(/:([^(/]+)/g);
-        for (const match of paramMatches) {
-          const paramName = match[1].replace('?', '');
-          route.params.push({
-            name: paramName,
-            type: 'string',
-            required: !match[1].endsWith('?'),
-            location: 'path',
-          });
-        }
-
-        routes.push(route);
-
-        // Track layout usage
-        const layout = pageMeta.layout || 'default';
-        if (!layoutUsage[layout]) layoutUsage[layout] = [];
-        layoutUsage[layout].push(filePath);
-
-        // Track component usage
-        for (const comp of templateComponents) {
-          if (!componentUsage[comp]) componentUsage[comp] = [];
-          componentUsage[comp].push(filePath);
-        }
-      }
-
-      // ── Server API routes ──
-      if (NUXT_DIRS.serverApi.test(filePath) || NUXT_DIRS.serverRoutes.test(filePath)) {
-        const routePath = serverPathToRoute(filePath);
-        const methods = extractServerMethods(p);
-
-        for (const method of methods) {
-          routes.push({
-            method,
-            path: routePath,
-            handler: filePath,
-            file: filePath,
-            decorators: [],
-            params: [],
-            framework: 'nuxt',
-            route_type: 'api',
-          });
-        }
-      }
-
-      // ── Composables ──
-      if (NUXT_DIRS.composables.test(filePath)) {
-        const composableName = composableNameFromPath(filePath);
-        const isStore = isPiniaStore(p);
-
-        if (isStore) {
-          // Pinia store
-          const storeInfo = extractStoreInfo(p);
-          models[composableName] = {
-            name: composableName,
-            file: filePath,
-            framework: 'nuxt',
-            kind: 'store',
-            fields: Object.entries(storeInfo.state).map(([name, type]) => ({
-              name,
-              type,
-              required: true,
-            })),
-            relationships: [],
-            state: storeInfo.state,
-            methods: storeInfo.methods,
-          };
-        } else {
-          // Regular composable
-          const exportedFuncs = p.functions.filter((f) => f.exported || f.name.startsWith('use'));
-
-          for (const func of exportedFuncs) {
-            models[func.name] = {
-              name: func.name,
-              file: filePath,
-              framework: 'nuxt',
-              kind: 'composable',
-              fields: func.params.map((param) => ({
-                name: param.name,
-                type: param.type || 'any',
-                required: !param.optional,
-              })),
-              relationships: [],
-              methods: func.calls.filter((c) => !c.includes('.')),
-            };
-          }
-        }
-      }
-
-      // ── Stores (dedicated store directory) ──
-      if (NUXT_DIRS.stores.test(filePath) && !NUXT_DIRS.composables.test(filePath)) {
-        if (isPiniaStore(p)) {
-          const storeName = filePath.split('/').pop()?.replace(/\.(?:ts|js)$/, '') || '';
-          const storeInfo = extractStoreInfo(p);
-          models[storeName] = {
-            name: storeName,
-            file: filePath,
-            framework: 'nuxt',
-            kind: 'store',
-            fields: Object.entries(storeInfo.state).map(([name, type]) => ({
-              name,
-              type,
-              required: true,
-            })),
-            relationships: [],
-            state: storeInfo.state,
-            methods: storeInfo.methods,
-          };
-        }
-      }
-
-      // ── Route Middleware ──
-      if (NUXT_DIRS.middleware.test(filePath)) {
-        const mwName = filePath
-          .replace(/^(?:src\/)?middleware\//, '')
-          .replace(/\.(?:ts|js|mjs)$/, '')
-          .replace(/\.global$/, '');
-
-        const isGlobal = filePath.includes('.global.');
-
-        middlewareMap[mwName] = {
-          name: mwName,
-          file: filePath,
-          framework: 'nuxt',
-          type: 'route_middleware',
-          global: isGlobal,
-        };
-      }
-
-      // ── Server Middleware ──
-      if (NUXT_DIRS.serverMiddleware.test(filePath)) {
-        const mwName = filePath
-          .replace(/^(?:src\/)?server\/middleware\//, '')
-          .replace(/\.(?:ts|js|mjs)$/, '');
-
-        middlewareMap[`server:${mwName}`] = {
-          name: mwName,
-          file: filePath,
-          framework: 'nuxt',
-          type: 'server_middleware',
-        };
-      }
-
-      // ── Layouts ──
-      if (NUXT_DIRS.layouts.test(filePath)) {
-        const layoutName = layoutNameFromPath(filePath);
-        layouts.push({
-          name: layoutName,
-          file: filePath,
-          used_by: layoutUsage[layoutName] || [],
-        });
-      }
-
-      // ── Plugins ──
-      if (NUXT_DIRS.plugins.test(filePath)) {
-        const pluginName = pluginNameFromPath(filePath);
-        const mode = pluginMode(filePath);
-        const provides = extractPluginProvides(p);
-
-        plugins.push({
-          name: pluginName,
-          file: filePath,
-          framework: 'nuxt',
-          mode,
-          provides: provides.length > 0 ? provides : undefined,
-        });
-      }
-
-      // ── Components ──
-      if (NUXT_DIRS.components.test(filePath)) {
-        const compName = componentNameFromPath(filePath);
-
-        // Extract props and emits
-        const props: ComponentInfo['props'] = [];
-        const emits: string[] = [];
-
-        // Check for defineProps
-        for (const func of p.functions) {
-          if (func.name === '__props' || func.calls.includes('defineProps')) {
-            // Props are typically in the function params or types
-            for (const param of func.params) {
-              props.push({
-                name: param.name,
-                type: param.type || 'any',
-                required: !param.optional,
-              });
-            }
-          }
-        }
-
-        // Check types for props interface
-        for (const type of p.types) {
-          if (type.name === 'Props' || type.name.endsWith('Props')) {
-            for (const prop of type.properties) {
-              props.push({
-                name: prop.name,
-                type: prop.type || 'any',
-                required: !prop.optional,
-              });
-            }
-          }
-        }
-
-        // Check for defineEmits
-        for (const func of p.functions) {
-          if (func.name === '__emit' || func.calls.includes('defineEmits')) {
-            // Emit names are typically in the function params
-          }
-        }
-
-        components.push({
-          name: compName,
-          file: filePath,
-          auto_imported: true,
-          props: props.length > 0 ? props : undefined,
-          emits: emits.length > 0 ? emits : undefined,
-          used_by: componentUsage[compName] || [],
-        });
-      }
+      classifyAndExtractNuxtFile(p, routes, models, middlewareMap, layouts, plugins, components, layoutUsage, componentUsage);
     }
 
     // ── Second pass: resolve layout and component usage ──
@@ -615,33 +721,11 @@ export class NuxtEnricher implements FrameworkEnricher {
 
       // Only process types from types/ or specific directories
       if (filePath.includes('types/') || filePath.includes('interfaces/')) {
-        for (const type of p.types) {
-          if (type.exported) {
-            models[type.name] = {
-              name: type.name,
-              file: filePath,
-              framework: 'nuxt',
-              kind: type.kind === 'interface' ? 'interface' : 'type_alias',
-              fields: type.properties.map((prop) => ({
-                name: prop.name,
-                type: prop.type || 'any',
-                required: !prop.optional,
-              })),
-              relationships: [],
-            };
-          }
-        }
+        Object.assign(models, extractTypeDefinitions(p));
       }
     }
 
     // ── Populate CodemapData ──
-    data.routes.push(...routes);
-    Object.assign(data.models, models);
-    Object.assign(data.middleware, middlewareMap);
-
-    // Store extended Nuxt-specific data
-    (data as any).plugins = [...((data as any).plugins || []), ...plugins];
-    (data as any).layouts = [...((data as any).layouts || []), ...layouts];
-    (data as any).components = [...((data as any).components || []), ...components];
+    populateCodemapData(data, routes, models, middlewareMap, plugins, layouts, components);
   }
 }

@@ -82,6 +82,42 @@ function isLifecycleOrFramework(
   return false;
 }
 
+function findDeadFunctions(
+  p: ParsedFile,
+  isEntryFile: boolean,
+  reverseCallGraph: ReverseCallGraph
+): { dead: DeadFunction[]; totalFunctions: number; totalLines: number } {
+  const dead: DeadFunction[] = [];
+  let totalFunctions = 0;
+  let totalLines = 0;
+
+  for (const func of p.functions) {
+    totalFunctions++;
+    if (isEntryFile || isLifecycleHook(func.name)) continue;
+    const callers = reverseCallGraph[func.name];
+    if (!callers || callers.length === 0) {
+      dead.push({ name: func.name, file: p.file.relative, lineCount: func.lineCount, isExported: func.exported, type: 'function' });
+      totalLines += func.lineCount;
+    }
+  }
+
+  for (const cls of p.classes) {
+    for (const method of cls.methods) {
+      totalFunctions++;
+      if (isEntryFile) continue;
+      if (isLifecycleOrFramework(method.name, method.decorators, method.name === 'constructor' || method.name === '__init__')) continue;
+      const qualifiedName = `${cls.name}.${method.name}`;
+      const callers = reverseCallGraph[qualifiedName];
+      if (!callers || callers.length === 0) {
+        dead.push({ name: qualifiedName, file: p.file.relative, lineCount: method.lineCount, isExported: method.access === 'public', type: 'method', className: cls.name });
+        totalLines += method.lineCount;
+      }
+    }
+  }
+
+  return { dead, totalFunctions, totalLines };
+}
+
 /**
  * Detect dead functions and methods.
  */
@@ -96,51 +132,10 @@ export function detectDeadCode(
   let totalLines = 0;
 
   for (const p of parsedFiles) {
-    const isEntryFile = entryPointFiles.has(p.file.relative);
-
-    // Standalone functions
-    for (const func of p.functions) {
-      totalFunctions++;
-
-      if (isEntryFile) continue;
-      if (isLifecycleHook(func.name)) continue;
-
-      const callers = reverseCallGraph[func.name];
-      if (!callers || callers.length === 0) {
-        dead.push({
-          name: func.name,
-          file: p.file.relative,
-          lineCount: func.lineCount,
-          isExported: func.exported,
-          type: 'function',
-        });
-        totalLines += func.lineCount;
-      }
-    }
-
-    // Class methods
-    for (const cls of p.classes) {
-      for (const method of cls.methods) {
-        totalFunctions++;
-
-        if (isEntryFile) continue;
-        if (isLifecycleOrFramework(method.name, method.decorators, method.name === 'constructor' || method.name === '__init__')) continue;
-
-        const qualifiedName = `${cls.name}.${method.name}`;
-        const callers = reverseCallGraph[qualifiedName];
-        if (!callers || callers.length === 0) {
-          dead.push({
-            name: qualifiedName,
-            file: p.file.relative,
-            lineCount: method.lineCount,
-            isExported: method.access === 'public',
-            type: 'method',
-            className: cls.name,
-          });
-          totalLines += method.lineCount;
-        }
-      }
-    }
+    const result = findDeadFunctions(p, entryPointFiles.has(p.file.relative), reverseCallGraph);
+    dead.push(...result.dead);
+    totalFunctions += result.totalFunctions;
+    totalLines += result.totalLines;
   }
 
   return {

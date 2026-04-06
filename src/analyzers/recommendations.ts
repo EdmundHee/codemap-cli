@@ -117,6 +117,108 @@ function deadCodeEffort(df: DeadFunction): 'trivial' | 'small' | 'medium' {
   return 'trivial';
 }
 
+function buildBatchDeadCodeRecommendation(file: string, funcs: DeadFunction[], data: CodemapData | null): Recommendation {
+  const totalLines = funcs.reduce((sum, f) => sum + f.lineCount, 0);
+  const names = funcs.map(f => f.name);
+  const exported = funcs.filter(f => f.isExported);
+  const priority = totalLines > 100 ? 'critical' : totalLines > 40 ? 'high' : 'medium';
+
+  const signatures = data ? names.map(n => getSignature(data, n)).filter(Boolean) as string[] : [];
+
+  const actionPlan = [
+    `Open \`${file}\` and locate the following dead functions: ${names.map(n => `\`${n}\``).join(', ')}`,
+  ];
+  if (exported.length > 0) {
+    actionPlan.push(
+      `IMPORTANT: Verify exported functions are not used by external packages or CLI entry points: ${exported.map(f => `\`${f.name}\``).join(', ')}`,
+      `Search across the project with: \`grep -r "${exported[0].name}" --include="*.ts" --include="*.js"\``,
+    );
+  }
+  actionPlan.push(
+    `Remove the ${funcs.length} dead functions and any imports they exclusively use`,
+    `Remove any associated types/interfaces used only by these dead functions`,
+    `Run \`npm test\` to confirm no regressions`,
+    `Run \`codemap generate && codemap health\` to verify health score improvement`,
+  );
+
+  return {
+    id: `dead-batch-${file.replace(/[^a-zA-Z0-9]/g, '-')}`,
+    category: 'dead-code',
+    priority,
+    title: `Remove ${funcs.length} dead functions from ${file}`,
+    description: `File \`${file}\` contains ${funcs.length} unreachable functions totaling ${totalLines} lines. ` +
+      `These functions have zero callers in the reverse call graph and are not lifecycle hooks or framework handlers.`,
+    affected: funcs.map(f => ({
+      name: f.name,
+      file: f.file,
+      detail: `${f.lineCount} lines, ${f.type}${f.isExported ? ', exported' : ''}`,
+    })),
+    action_plan: actionPlan,
+    impact: `Remove ${totalLines} lines of dead code (${funcs.length} functions), improving health score`,
+    effort: totalLines > 100 ? 'medium' : 'small',
+    context: {
+      signatures: signatures.length > 0 ? signatures : undefined,
+      total_lines: totalLines,
+    },
+  };
+}
+
+function buildIndividualDeadCodeRecommendation(df: DeadFunction, data: CodemapData | null): Recommendation {
+  const priority = prioritizeDeadCode(df);
+  const sig = getSignature(data, df.name);
+  const calls = getCalls(data, df.name);
+  const actionPlan: string[] = [];
+
+  if (df.isExported) {
+    actionPlan.push(
+      `Search for external consumers of \`${df.name}\` — it is exported but has zero internal callers`,
+      `Check: \`grep -r "${df.name.split('.').pop()}" --include="*.ts" --include="*.js" | grep -v "${df.file}"\``,
+      `If no external usage found, remove the export and the function from \`${df.file}\``,
+    );
+  } else {
+    actionPlan.push(
+      `Remove \`${df.name}\` from \`${df.file}\` (${df.lineCount} lines)`,
+    );
+  }
+
+  if (calls.length > 0) {
+    actionPlan.push(
+      `Check if any imports in \`${df.file}\` were used exclusively by \`${df.name}\` and can also be removed`,
+    );
+  }
+  if (df.className) {
+    actionPlan.push(
+      `Review class \`${df.className}\` for other unused methods that could also be removed`,
+    );
+  }
+  actionPlan.push(
+    `Run \`npm test\` to confirm no regressions`,
+  );
+
+  return {
+    id: `dead-${df.name.replace(/[^a-zA-Z0-9]/g, '-')}`,
+    category: 'dead-code',
+    priority,
+    title: `Remove dead ${df.type} \`${df.name}\``,
+    description: `\`${df.name}\` in \`${df.file}\` has ${df.lineCount} lines with zero callers in the call graph. ` +
+      (df.isExported
+        ? 'It is exported — verify no external packages depend on it before removal.'
+        : 'It is not exported and can be safely removed.') +
+      (calls.length > 0
+        ? ` It internally calls: ${calls.slice(0, 6).join(', ')}${calls.length > 6 ? ` (+${calls.length - 6} more)` : ''}.`
+        : ''),
+    affected: [{ name: df.name, file: df.file, detail: `${df.lineCount} lines, ${df.type}` }],
+    action_plan: actionPlan,
+    impact: `Remove ${df.lineCount} lines of unreachable code`,
+    effort: deadCodeEffort(df),
+    context: {
+      signatures: sig ? [sig] : undefined,
+      calls: calls.length > 0 ? calls : undefined,
+      total_lines: df.lineCount,
+    },
+  };
+}
+
 export function generateDeadCodeRecommendations(
   deadCode: DeadCodeData,
   data: CodemapData | null = null,
@@ -135,49 +237,7 @@ export function generateDeadCodeRecommendations(
   // Generate per-file batch recommendations for files with multiple dead functions
   for (const [file, funcs] of byFile) {
     if (funcs.length >= 3) {
-      const totalLines = funcs.reduce((sum, f) => sum + f.lineCount, 0);
-      const names = funcs.map(f => f.name);
-      const exported = funcs.filter(f => f.isExported);
-      const priority = totalLines > 100 ? 'critical' : totalLines > 40 ? 'high' : 'medium';
-
-      const signatures = data ? names.map(n => getSignature(data, n)).filter(Boolean) as string[] : [];
-
-      const actionPlan = [
-        `Open \`${file}\` and locate the following dead functions: ${names.map(n => `\`${n}\``).join(', ')}`,
-      ];
-      if (exported.length > 0) {
-        actionPlan.push(
-          `IMPORTANT: Verify exported functions are not used by external packages or CLI entry points: ${exported.map(f => `\`${f.name}\``).join(', ')}`,
-          `Search across the project with: \`grep -r "${exported[0].name}" --include="*.ts" --include="*.js"\``,
-        );
-      }
-      actionPlan.push(
-        `Remove the ${funcs.length} dead functions and any imports they exclusively use`,
-        `Remove any associated types/interfaces used only by these dead functions`,
-        `Run \`npm test\` to confirm no regressions`,
-        `Run \`codemap generate && codemap health\` to verify health score improvement`,
-      );
-
-      recommendations.push({
-        id: `dead-batch-${file.replace(/[^a-zA-Z0-9]/g, '-')}`,
-        category: 'dead-code',
-        priority,
-        title: `Remove ${funcs.length} dead functions from ${file}`,
-        description: `File \`${file}\` contains ${funcs.length} unreachable functions totaling ${totalLines} lines. ` +
-          `These functions have zero callers in the reverse call graph and are not lifecycle hooks or framework handlers.`,
-        affected: funcs.map(f => ({
-          name: f.name,
-          file: f.file,
-          detail: `${f.lineCount} lines, ${f.type}${f.isExported ? ', exported' : ''}`,
-        })),
-        action_plan: actionPlan,
-        impact: `Remove ${totalLines} lines of dead code (${funcs.length} functions), improving health score`,
-        effort: totalLines > 100 ? 'medium' : 'small',
-        context: {
-          signatures: signatures.length > 0 ? signatures : undefined,
-          total_lines: totalLines,
-        },
-      });
+      recommendations.push(buildBatchDeadCodeRecommendation(file, funcs, data));
     }
   }
 
@@ -191,59 +251,7 @@ export function generateDeadCodeRecommendations(
     .sort((a, b) => b.lineCount - a.lineCount);
 
   for (const df of individualFuncs.slice(0, 15)) {
-    const priority = prioritizeDeadCode(df);
-    const sig = getSignature(data, df.name);
-    const calls = getCalls(data, df.name);
-    const actionPlan: string[] = [];
-
-    if (df.isExported) {
-      actionPlan.push(
-        `Search for external consumers of \`${df.name}\` — it is exported but has zero internal callers`,
-        `Check: \`grep -r "${df.name.split('.').pop()}" --include="*.ts" --include="*.js" | grep -v "${df.file}"\``,
-        `If no external usage found, remove the export and the function from \`${df.file}\``,
-      );
-    } else {
-      actionPlan.push(
-        `Remove \`${df.name}\` from \`${df.file}\` (${df.lineCount} lines)`,
-      );
-    }
-
-    if (calls.length > 0) {
-      actionPlan.push(
-        `Check if any imports in \`${df.file}\` were used exclusively by \`${df.name}\` and can also be removed`,
-      );
-    }
-    if (df.className) {
-      actionPlan.push(
-        `Review class \`${df.className}\` for other unused methods that could also be removed`,
-      );
-    }
-    actionPlan.push(
-      `Run \`npm test\` to confirm no regressions`,
-    );
-
-    recommendations.push({
-      id: `dead-${df.name.replace(/[^a-zA-Z0-9]/g, '-')}`,
-      category: 'dead-code',
-      priority,
-      title: `Remove dead ${df.type} \`${df.name}\``,
-      description: `\`${df.name}\` in \`${df.file}\` has ${df.lineCount} lines with zero callers in the call graph. ` +
-        (df.isExported
-          ? 'It is exported — verify no external packages depend on it before removal.'
-          : 'It is not exported and can be safely removed.') +
-        (calls.length > 0
-          ? ` It internally calls: ${calls.slice(0, 6).join(', ')}${calls.length > 6 ? ` (+${calls.length - 6} more)` : ''}.`
-          : ''),
-      affected: [{ name: df.name, file: df.file, detail: `${df.lineCount} lines, ${df.type}` }],
-      action_plan: actionPlan,
-      impact: `Remove ${df.lineCount} lines of unreachable code`,
-      effort: deadCodeEffort(df),
-      context: {
-        signatures: sig ? [sig] : undefined,
-        calls: calls.length > 0 ? calls : undefined,
-        total_lines: df.lineCount,
-      },
-    });
+    recommendations.push(buildIndividualDeadCodeRecommendation(df, data));
   }
 
   return recommendations;
@@ -278,6 +286,120 @@ function suggestFunctionName(signature: string): string {
   return signature;
 }
 
+interface DuplicateCallAnalysis {
+  sharedCalls: string[];
+  uniqueCallsPerCopy: Record<string, string[]>;
+}
+
+function analyzeDuplicateCalls(dup: DuplicateGroup): DuplicateCallAnalysis {
+  const allCallSets = dup.functions.map(f => new Set(f.calls));
+  const sharedCalls = dup.functions[0].calls.filter(c =>
+    allCallSets.every(s => s.has(c))
+  );
+  const uniqueCallsPerCopy: Record<string, string[]> = {};
+  for (const f of dup.functions) {
+    const unique = f.calls.filter(c => !sharedCalls.includes(c));
+    if (unique.length > 0) {
+      uniqueCallsPerCopy[`${f.name} in ${f.file}`] = unique;
+    }
+  }
+  return { sharedCalls, uniqueCallsPerCopy };
+}
+
+function buildHighSimilarityActionPlan(
+  dup: DuplicateGroup,
+  sharedLocation: string,
+  signatures: string[],
+  sharedCalls: string[],
+  uniqueCallsPerCopy: Record<string, string[]>
+): string[] {
+  const plan: string[] = [
+    `Create \`${sharedLocation}\` with a shared \`${suggestFunctionName(dup.signature)}\` function`,
+    `Signature: \`${signatures[0] || `${dup.signature}(${dup.functions[0].params || '...'})`}\``,
+  ];
+  if (sharedCalls.length > 0) {
+    plan.push(`The shared function should contain the common logic that calls: ${sharedCalls.slice(0, 8).join(', ')}`);
+  }
+  plan.push(`In each of these files, replace the local implementation with an import from \`${sharedLocation}\`:`);
+  for (const f of dup.functions) {
+    plan.push(`  - \`${f.file}\`: replace \`${f.name}\` with import`);
+  }
+  if (Object.keys(uniqueCallsPerCopy).length > 0) {
+    plan.push('Handle divergent logic per copy:');
+    for (const [loc, unique] of Object.entries(uniqueCallsPerCopy)) {
+      plan.push(`  - ${loc} has unique calls: ${unique.join(', ')}`);
+    }
+    plan.push('Either add a configuration parameter to the shared function or keep thin wrappers for the divergent parts');
+  }
+  return plan;
+}
+
+function buildLowSimilarityActionPlan(
+  dup: DuplicateGroup,
+  sharedLocation: string,
+  sharedCalls: string[]
+): string[] {
+  const plan: string[] = [`Compare the implementations side by side:`];
+  for (const f of dup.functions) {
+    plan.push(`  - \`${f.name}\` in \`${f.file}\` (params: ${f.params || 'none'})`);
+  }
+  plan.push(
+    `Identify the common core logic (${Math.round(dup.similarity * 100)}% call overlap)`,
+    `Extract the shared core into \`${sharedLocation}\``,
+    `Keep the divergent parts as thin wrapper functions that delegate to the shared core`,
+  );
+  if (sharedCalls.length > 0) {
+    plan.push(`Common calls to extract: ${sharedCalls.join(', ')}`);
+  }
+  return plan;
+}
+
+function buildDuplicateRecommendation(dup: DuplicateGroup, data: CodemapData | null): Recommendation {
+  const priority = duplicatePriority(dup);
+  const files = [...new Set(dup.functions.map(f => f.file))];
+  const sharedLocation = suggestSharedLocation(files);
+  const { sharedCalls, uniqueCallsPerCopy } = analyzeDuplicateCalls(dup);
+
+  const signatures = data
+    ? dup.functions.map(f => getSignature(data, f.name)).filter(Boolean) as string[]
+    : [];
+
+  const actionPlan = dup.similarity >= 0.7
+    ? buildHighSimilarityActionPlan(dup, sharedLocation, signatures, sharedCalls, uniqueCallsPerCopy)
+    : buildLowSimilarityActionPlan(dup, sharedLocation, sharedCalls);
+  actionPlan.push(
+    `Update all imports in affected files`,
+    `Run \`npm test\` to confirm no regressions`,
+  );
+
+  return {
+    id: `dup-${dup.signature.replace(/[^a-zA-Z0-9]/g, '-')}`,
+    category: 'duplicates',
+    priority,
+    title: `Deduplicate \`${dup.signature}\` (${dup.functions.length} copies, ${Math.round(dup.similarity * 100)}% similar)`,
+    description: `${dup.functions.length} functions named \`${dup.signature}\` exist across ${files.length} files ` +
+      `with ${Math.round(dup.similarity * 100)}% call pattern similarity. ` +
+      (sharedCalls.length > 0
+        ? `They share ${sharedCalls.length} common internal calls (${sharedCalls.slice(0, 5).join(', ')}${sharedCalls.length > 5 ? '...' : ''}). `
+        : '') +
+      `Extract into \`${sharedLocation}\`.`,
+    affected: dup.functions.map(f => ({
+      name: f.name,
+      file: f.file,
+      detail: f.params ? `params: (${f.params})` : 'no params',
+    })),
+    action_plan: actionPlan,
+    impact: `Eliminate ${dup.functions.length - 1} redundant implementations, improving maintainability`,
+    effort: dup.similarity >= 0.7 ? 'small' : 'medium',
+    context: {
+      signatures: signatures.length > 0 ? signatures : undefined,
+      calls: sharedCalls.length > 0 ? sharedCalls : undefined,
+      unique_calls_per_copy: Object.keys(uniqueCallsPerCopy).length > 0 ? uniqueCallsPerCopy : undefined,
+      suggested_names: [`${sharedLocation}`],
+    },
+  };
+}
+
 export function generateDuplicateRecommendations(
   duplicates: DuplicateGroup[],
   data: CodemapData | null = null,
@@ -287,100 +409,7 @@ export function generateDuplicateRecommendations(
   const recommendations: Recommendation[] = [];
 
   for (const dup of duplicates.slice(0, 15)) {
-    const priority = duplicatePriority(dup);
-    const files = [...new Set(dup.functions.map(f => f.file))];
-    const sharedLocation = suggestSharedLocation(files);
-
-    // Compute shared vs unique calls
-    const allCallSets = dup.functions.map(f => new Set(f.calls));
-    const sharedCalls = dup.functions[0].calls.filter(c =>
-      allCallSets.every(s => s.has(c))
-    );
-    const uniqueCallsPerCopy: Record<string, string[]> = {};
-    for (const f of dup.functions) {
-      const unique = f.calls.filter(c => !sharedCalls.includes(c));
-      if (unique.length > 0) {
-        uniqueCallsPerCopy[`${f.name} in ${f.file}`] = unique;
-      }
-    }
-
-    // Get signatures from codemap
-    const signatures = data
-      ? dup.functions.map(f => getSignature(data, f.name)).filter(Boolean) as string[]
-      : [];
-
-    const actionPlan: string[] = [];
-
-    if (dup.similarity >= 0.7) {
-      actionPlan.push(
-        `Create \`${sharedLocation}\` with a shared \`${suggestFunctionName(dup.signature)}\` function`,
-        `Signature: \`${signatures[0] || `${dup.signature}(${dup.functions[0].params || '...'})`}\``,
-      );
-      if (sharedCalls.length > 0) {
-        actionPlan.push(
-          `The shared function should contain the common logic that calls: ${sharedCalls.slice(0, 8).join(', ')}`,
-        );
-      }
-      actionPlan.push(
-        `In each of these files, replace the local implementation with an import from \`${sharedLocation}\`:`,
-      );
-      for (const f of dup.functions) {
-        actionPlan.push(`  - \`${f.file}\`: replace \`${f.name}\` with import`);
-      }
-      if (Object.keys(uniqueCallsPerCopy).length > 0) {
-        actionPlan.push('Handle divergent logic per copy:');
-        for (const [loc, unique] of Object.entries(uniqueCallsPerCopy)) {
-          actionPlan.push(`  - ${loc} has unique calls: ${unique.join(', ')}`);
-        }
-        actionPlan.push('Either add a configuration parameter to the shared function or keep thin wrappers for the divergent parts');
-      }
-    } else {
-      actionPlan.push(
-        `Compare the implementations side by side:`,
-      );
-      for (const f of dup.functions) {
-        actionPlan.push(`  - \`${f.name}\` in \`${f.file}\` (params: ${f.params || 'none'})`);
-      }
-      actionPlan.push(
-        `Identify the common core logic (${Math.round(dup.similarity * 100)}% call overlap)`,
-        `Extract the shared core into \`${sharedLocation}\``,
-        `Keep the divergent parts as thin wrapper functions that delegate to the shared core`,
-      );
-      if (sharedCalls.length > 0) {
-        actionPlan.push(`Common calls to extract: ${sharedCalls.join(', ')}`);
-      }
-    }
-    actionPlan.push(
-      `Update all imports in affected files`,
-      `Run \`npm test\` to confirm no regressions`,
-    );
-
-    recommendations.push({
-      id: `dup-${dup.signature.replace(/[^a-zA-Z0-9]/g, '-')}`,
-      category: 'duplicates',
-      priority,
-      title: `Deduplicate \`${dup.signature}\` (${dup.functions.length} copies, ${Math.round(dup.similarity * 100)}% similar)`,
-      description: `${dup.functions.length} functions named \`${dup.signature}\` exist across ${files.length} files ` +
-        `with ${Math.round(dup.similarity * 100)}% call pattern similarity. ` +
-        (sharedCalls.length > 0
-          ? `They share ${sharedCalls.length} common internal calls (${sharedCalls.slice(0, 5).join(', ')}${sharedCalls.length > 5 ? '...' : ''}). `
-          : '') +
-        `Extract into \`${sharedLocation}\`.`,
-      affected: dup.functions.map(f => ({
-        name: f.name,
-        file: f.file,
-        detail: f.params ? `params: (${f.params})` : 'no params',
-      })),
-      action_plan: actionPlan,
-      impact: `Eliminate ${dup.functions.length - 1} redundant implementations, improving maintainability`,
-      effort: dup.similarity >= 0.7 ? 'small' : 'medium',
-      context: {
-        signatures: signatures.length > 0 ? signatures : undefined,
-        calls: sharedCalls.length > 0 ? sharedCalls : undefined,
-        unique_calls_per_copy: Object.keys(uniqueCallsPerCopy).length > 0 ? uniqueCallsPerCopy : undefined,
-        suggested_names: [`${sharedLocation}`],
-      },
-    });
+    recommendations.push(buildDuplicateRecommendation(dup, data));
   }
 
   return recommendations;
@@ -465,6 +494,163 @@ export function generateCircularDepRecommendations(cycles: CycleData[]): Recomme
 
 // ─── Complexity Hotspot Recommendations ───────────────────────────────────
 
+function buildConcernDecompositionSteps(target: string, calls: string[]): string[] {
+  const steps: string[] = [];
+  const callGroups = groupCallsByConcern(calls);
+  if (callGroups.length > 1) {
+    steps.push(`This function has ${callGroups.length} identifiable concerns that should be separate functions:`);
+    for (let i = 0; i < Math.min(callGroups.length, 6); i++) {
+      const g = callGroups[i];
+      const suggestedName = suggestHelperName(target, g.label);
+      steps.push(`  ${i + 1}. \`${suggestedName}\` — handles: ${g.calls.slice(0, 5).join(', ')}${g.calls.length > 5 ? ` (+${g.calls.length - 5} more)` : ''}`);
+    }
+  } else {
+    steps.push(`Key internal calls: ${calls.slice(0, 10).join(', ')}${calls.length > 10 ? ` (+${calls.length - 10} more)` : ''}`);
+  }
+  return steps;
+}
+
+function buildComplexityActionPlan(
+  h: HealthHotspot,
+  ratio: number,
+  sig: string | null,
+  lineCount: number,
+  calls: string[]
+): string[] {
+  const plan = [
+    `Open \`${h.file}\` and locate \`${h.target}\`${sig ? ` — signature: \`${sig}\`` : ''}`,
+    `Current complexity: ${h.value} (threshold: ${h.threshold}, ratio: ${ratio.toFixed(1)}x)${lineCount ? `, ${lineCount} lines` : ''}`,
+  ];
+
+  if (calls.length > 0) {
+    plan.push(...buildConcernDecompositionSteps(h.target, calls));
+  }
+
+  plan.push(
+    `Refactoring strategy:`,
+    `  a. Identify each conditional branch (if/else/switch/ternary/try-catch) — each adds 1 to complexity`,
+    `  b. Extract each logical block into a well-named private helper function`,
+    `  c. Use early returns to flatten nested conditionals`,
+    `  d. The main function should read like a high-level orchestration of the helpers`,
+  );
+
+  if (ratio > 3) {
+    plan.push(
+      `WARNING: At ${ratio.toFixed(1)}x threshold, consider a full structural rewrite:`,
+      `  - Use strategy pattern if branching on a type/mode flag`,
+      `  - Use lookup table/map if dispatching based on string keys`,
+      `  - Use pipeline pattern if processing data through sequential stages`,
+    );
+  }
+
+  plan.push(
+    `After refactoring, verify: \`codemap generate && codemap health\` — target complexity below ${h.threshold}`,
+  );
+
+  return plan;
+}
+
+function buildComplexityRecommendation(h: HealthHotspot, data: CodemapData | null): Recommendation {
+  const ratio = h.value / h.threshold;
+  const priority = h.severity === 'critical' ? 'critical' : ratio > 2 ? 'high' : 'medium';
+
+  const calls = getCalls(data, h.target);
+  const sig = getSignature(data, h.target);
+  const fn = lookupFunction(data, h.target);
+  const lineCount = fn?.line_count || fn?.lineCount || 0;
+
+  const actionPlan = buildComplexityActionPlan(h, ratio, sig, lineCount, calls);
+
+  return {
+    id: `complexity-${h.target.replace(/[^a-zA-Z0-9]/g, '-')}`,
+    category: 'complexity',
+    priority,
+    title: `Reduce complexity of \`${h.target}\` (${h.value}/${h.threshold})`,
+    description: `\`${h.target}\` in \`${h.file}\` has cyclomatic complexity of ${h.value} ` +
+      `(${ratio.toFixed(1)}x the threshold of ${h.threshold}).` +
+      (lineCount ? ` It spans ${lineCount} lines.` : '') +
+      (calls.length > 3 ? ` It makes ${calls.length} distinct internal calls, suggesting multiple responsibilities.` : ''),
+    affected: [{ name: h.target, file: h.file, detail: `complexity: ${h.value}, ${lineCount ? `${lineCount} lines` : 'threshold: ' + h.threshold}` }],
+    action_plan: actionPlan,
+    impact: `Reduce complexity from ${h.value} to below ${h.threshold}, improving testability and maintainability`,
+    effort: ratio > 3 ? 'large' : 'medium',
+    context: {
+      signatures: sig ? [sig] : undefined,
+      calls: calls.length > 0 ? calls : undefined,
+      total_lines: lineCount || undefined,
+    },
+  };
+}
+
+function buildGodClassRecommendation(h: HealthHotspot, data: CodemapData | null): Recommendation {
+  // Get method list from codemap
+  const cls = data?.classes?.[h.target] as any;
+  const methods = cls?.methods?.map((m: any) => m.name) || [];
+  const methodDetails = cls?.methods?.map((m: any) => `${m.name}(${(m.params || []).map((p: any) => p.name).join(', ')}) — complexity: ${m.complexity || '?'}, ${m.line_count || m.lineCount || '?'} lines`) || [];
+
+  const actionPlan = [
+    `Open \`${h.file}\` and review class \`${h.target}\` (${h.value} methods, threshold: ${h.threshold})`,
+  ];
+
+  if (methodDetails.length > 0) {
+    actionPlan.push(`Current methods:`);
+    for (const md of methodDetails.slice(0, 15)) {
+      actionPlan.push(`  - ${md}`);
+    }
+    if (methodDetails.length > 15) {
+      actionPlan.push(`  ... and ${methodDetails.length - 15} more`);
+    }
+  }
+
+  actionPlan.push(
+    `Group these methods by responsibility/concern (e.g., data access, validation, formatting, I/O)`,
+    `Extract each concern group into a dedicated class:`,
+    `  - Name each extracted class by its specific responsibility (e.g., \`${h.target}Validator\`, \`${h.target}Formatter\`)`,
+    `  - The original \`${h.target}\` should delegate to these via composition`,
+    `  - Each extracted class should be independently testable`,
+    `Update existing tests and add new tests for extracted classes`,
+    `Run \`npm test\` to confirm no regressions`,
+  );
+
+  return {
+    id: `god-class-${h.target.replace(/[^a-zA-Z0-9]/g, '-')}`,
+    category: 'complexity',
+    priority: h.severity === 'critical' ? 'critical' : 'high',
+    title: `Split god class \`${h.target}\` (${h.value} methods)`,
+    description: `\`${h.target}\` in \`${h.file}\` has ${h.value} methods (threshold: ${h.threshold}). ` +
+      `Large classes violate the Single Responsibility Principle and are hard to maintain and test.` +
+      (methods.length > 0 ? ` Methods: ${methods.slice(0, 8).join(', ')}${methods.length > 8 ? `... (+${methods.length - 8})` : ''}.` : ''),
+    affected: [{ name: h.target, file: h.file, detail: `${h.value} methods` }],
+    action_plan: actionPlan,
+    impact: `Split ${h.value}-method class into focused, independently testable components`,
+    effort: 'large',
+    context: {
+      suggested_names: methods.length > 0 ? methods : undefined,
+    },
+  };
+}
+
+function buildCouplingRecommendation(h: HealthHotspot): Recommendation {
+  return {
+    id: `coupling-${h.target.replace(/[^a-zA-Z0-9]/g, '-')}`,
+    category: 'coupling',
+    priority: h.severity === 'critical' ? 'high' : 'medium',
+    title: `Reduce coupling in module \`${h.target}\``,
+    description: `Module \`${h.target}\` has high coupling (${h.metric}: ${h.value}, threshold: ${h.threshold}). ` +
+      `Changes in this module ripple across many dependents.`,
+    affected: [{ name: h.target, file: h.file, detail: `${h.metric}: ${h.value}` }],
+    action_plan: [
+      `Identify the most imported symbols from \`${h.target}\` using \`codemap query --module ${h.target}\``,
+      `Create a stable public API barrel file (\`${h.target}/index.ts\`) that re-exports only necessary symbols`,
+      `Move internal helpers to private modules not re-exported from the barrel`,
+      `Consider introducing interfaces to decouple concrete implementations from consumers`,
+      `Run \`codemap analyze --circular\` after changes to verify no new cycles`,
+    ],
+    impact: `Reduce module instability from ${h.value} toward ${h.threshold}, making refactoring safer`,
+    effort: 'medium',
+  };
+}
+
 export function generateHotspotRecommendations(
   hotspots: HealthHotspot[],
   data: CodemapData | null = null,
@@ -478,144 +664,15 @@ export function generateHotspotRecommendations(
   const highCoupling = hotspots.filter(h => h.type === 'high_coupling');
 
   for (const h of complexityHotspots.slice(0, 10)) {
-    const ratio = h.value / h.threshold;
-    const priority = h.severity === 'critical' ? 'critical' : ratio > 2 ? 'high' : 'medium';
-
-    // Get the function's calls to suggest decomposition
-    const calls = getCalls(data, h.target);
-    const sig = getSignature(data, h.target);
-    const fn = lookupFunction(data, h.target);
-    const lineCount = fn?.line_count || fn?.lineCount || 0;
-
-    const actionPlan = [
-      `Open \`${h.file}\` and locate \`${h.target}\`${sig ? ` — signature: \`${sig}\`` : ''}`,
-      `Current complexity: ${h.value} (threshold: ${h.threshold}, ratio: ${ratio.toFixed(1)}x)${lineCount ? `, ${lineCount} lines` : ''}`,
-    ];
-
-    if (calls.length > 0) {
-      // Group calls by likely concern
-      const callGroups = groupCallsByConcern(calls);
-      if (callGroups.length > 1) {
-        actionPlan.push(`This function has ${callGroups.length} identifiable concerns that should be separate functions:`);
-        for (let i = 0; i < Math.min(callGroups.length, 6); i++) {
-          const g = callGroups[i];
-          const suggestedName = suggestHelperName(h.target, g.label);
-          actionPlan.push(`  ${i + 1}. \`${suggestedName}\` — handles: ${g.calls.slice(0, 5).join(', ')}${g.calls.length > 5 ? ` (+${g.calls.length - 5} more)` : ''}`);
-        }
-      } else {
-        actionPlan.push(`Key internal calls: ${calls.slice(0, 10).join(', ')}${calls.length > 10 ? ` (+${calls.length - 10} more)` : ''}`);
-      }
-    }
-
-    actionPlan.push(
-      `Refactoring strategy:`,
-      `  a. Identify each conditional branch (if/else/switch/ternary/try-catch) — each adds 1 to complexity`,
-      `  b. Extract each logical block into a well-named private helper function`,
-      `  c. Use early returns to flatten nested conditionals`,
-      `  d. The main function should read like a high-level orchestration of the helpers`,
-    );
-
-    if (ratio > 3) {
-      actionPlan.push(
-        `WARNING: At ${ratio.toFixed(1)}x threshold, consider a full structural rewrite:`,
-        `  - Use strategy pattern if branching on a type/mode flag`,
-        `  - Use lookup table/map if dispatching based on string keys`,
-        `  - Use pipeline pattern if processing data through sequential stages`,
-      );
-    }
-
-    actionPlan.push(
-      `After refactoring, verify: \`codemap generate && codemap health\` — target complexity below ${h.threshold}`,
-    );
-
-    recommendations.push({
-      id: `complexity-${h.target.replace(/[^a-zA-Z0-9]/g, '-')}`,
-      category: 'complexity',
-      priority,
-      title: `Reduce complexity of \`${h.target}\` (${h.value}/${h.threshold})`,
-      description: `\`${h.target}\` in \`${h.file}\` has cyclomatic complexity of ${h.value} ` +
-        `(${ratio.toFixed(1)}x the threshold of ${h.threshold}).` +
-        (lineCount ? ` It spans ${lineCount} lines.` : '') +
-        (calls.length > 3 ? ` It makes ${calls.length} distinct internal calls, suggesting multiple responsibilities.` : ''),
-      affected: [{ name: h.target, file: h.file, detail: `complexity: ${h.value}, ${lineCount ? `${lineCount} lines` : 'threshold: ' + h.threshold}` }],
-      action_plan: actionPlan,
-      impact: `Reduce complexity from ${h.value} to below ${h.threshold}, improving testability and maintainability`,
-      effort: ratio > 3 ? 'large' : 'medium',
-      context: {
-        signatures: sig ? [sig] : undefined,
-        calls: calls.length > 0 ? calls : undefined,
-        total_lines: lineCount || undefined,
-      },
-    });
+    recommendations.push(buildComplexityRecommendation(h, data));
   }
 
   for (const h of godClasses.slice(0, 5)) {
-    // Get method list from codemap
-    const cls = data?.classes?.[h.target] as any;
-    const methods = cls?.methods?.map((m: any) => m.name) || [];
-    const methodDetails = cls?.methods?.map((m: any) => `${m.name}(${(m.params || []).map((p: any) => p.name).join(', ')}) — complexity: ${m.complexity || '?'}, ${m.line_count || m.lineCount || '?'} lines`) || [];
-
-    const actionPlan = [
-      `Open \`${h.file}\` and review class \`${h.target}\` (${h.value} methods, threshold: ${h.threshold})`,
-    ];
-
-    if (methodDetails.length > 0) {
-      actionPlan.push(`Current methods:`);
-      for (const md of methodDetails.slice(0, 15)) {
-        actionPlan.push(`  - ${md}`);
-      }
-      if (methodDetails.length > 15) {
-        actionPlan.push(`  ... and ${methodDetails.length - 15} more`);
-      }
-    }
-
-    actionPlan.push(
-      `Group these methods by responsibility/concern (e.g., data access, validation, formatting, I/O)`,
-      `Extract each concern group into a dedicated class:`,
-      `  - Name each extracted class by its specific responsibility (e.g., \`${h.target}Validator\`, \`${h.target}Formatter\`)`,
-      `  - The original \`${h.target}\` should delegate to these via composition`,
-      `  - Each extracted class should be independently testable`,
-      `Update existing tests and add new tests for extracted classes`,
-      `Run \`npm test\` to confirm no regressions`,
-    );
-
-    recommendations.push({
-      id: `god-class-${h.target.replace(/[^a-zA-Z0-9]/g, '-')}`,
-      category: 'complexity',
-      priority: h.severity === 'critical' ? 'critical' : 'high',
-      title: `Split god class \`${h.target}\` (${h.value} methods)`,
-      description: `\`${h.target}\` in \`${h.file}\` has ${h.value} methods (threshold: ${h.threshold}). ` +
-        `Large classes violate the Single Responsibility Principle and are hard to maintain and test.` +
-        (methods.length > 0 ? ` Methods: ${methods.slice(0, 8).join(', ')}${methods.length > 8 ? `... (+${methods.length - 8})` : ''}.` : ''),
-      affected: [{ name: h.target, file: h.file, detail: `${h.value} methods` }],
-      action_plan: actionPlan,
-      impact: `Split ${h.value}-method class into focused, independently testable components`,
-      effort: 'large',
-      context: {
-        suggested_names: methods.length > 0 ? methods : undefined,
-      },
-    });
+    recommendations.push(buildGodClassRecommendation(h, data));
   }
 
   for (const h of highCoupling.slice(0, 5)) {
-    recommendations.push({
-      id: `coupling-${h.target.replace(/[^a-zA-Z0-9]/g, '-')}`,
-      category: 'coupling',
-      priority: h.severity === 'critical' ? 'high' : 'medium',
-      title: `Reduce coupling in module \`${h.target}\``,
-      description: `Module \`${h.target}\` has high coupling (${h.metric}: ${h.value}, threshold: ${h.threshold}). ` +
-        `Changes in this module ripple across many dependents.`,
-      affected: [{ name: h.target, file: h.file, detail: `${h.metric}: ${h.value}` }],
-      action_plan: [
-        `Identify the most imported symbols from \`${h.target}\` using \`codemap query --module ${h.target}\``,
-        `Create a stable public API barrel file (\`${h.target}/index.ts\`) that re-exports only necessary symbols`,
-        `Move internal helpers to private modules not re-exported from the barrel`,
-        `Consider introducing interfaces to decouple concrete implementations from consumers`,
-        `Run \`codemap analyze --circular\` after changes to verify no new cycles`,
-      ],
-      impact: `Reduce module instability from ${h.value} toward ${h.threshold}, making refactoring safer`,
-      effort: 'medium',
-    });
+    recommendations.push(buildCouplingRecommendation(h));
   }
 
   return recommendations;
@@ -724,6 +781,54 @@ const PRIORITY_ICONS: Record<string, string> = {
   low: '🟢',
 };
 
+function formatSingleRecommendation(rec: Recommendation, index: number): string[] {
+  const lines: string[] = [];
+  const icon = PRIORITY_ICONS[rec.priority] || '⚪';
+
+  lines.push(`  ─── ${index + 1}. ${icon} [${rec.priority.toUpperCase()}] ${rec.title} ───`);
+  lines.push('');
+  lines.push(`  ${rec.description}`);
+  lines.push('');
+
+  // Show signatures if available
+  if (rec.context?.signatures && rec.context.signatures.length > 0) {
+    lines.push('  Signatures:');
+    for (const sig of rec.context.signatures.slice(0, 5)) {
+      lines.push(`    ${sig}`);
+    }
+    lines.push('');
+  }
+
+  // Affected items
+  lines.push('  Affected:');
+  for (const a of rec.affected.slice(0, 10)) {
+    lines.push(`    • ${a.name} — ${a.file}${a.detail ? ` (${a.detail})` : ''}`);
+  }
+  if (rec.affected.length > 10) {
+    lines.push(`    ... and ${rec.affected.length - 10} more`);
+  }
+  lines.push('');
+
+  // Action plan
+  lines.push('  Action plan:');
+  for (let j = 0; j < rec.action_plan.length; j++) {
+    const step = rec.action_plan[j];
+    if (step.startsWith('  ')) {
+      // Indented sub-step
+      lines.push(`    ${step}`);
+    } else {
+      lines.push(`    ${j + 1}. ${step}`);
+    }
+  }
+  lines.push('');
+
+  lines.push(`  Impact: ${rec.impact}`);
+  lines.push(`  Effort: ${rec.effort}`);
+  lines.push('');
+
+  return lines;
+}
+
 export function formatRecommendationReport(report: RecommendationReport): string {
   const lines: string[] = [];
 
@@ -748,49 +853,7 @@ export function formatRecommendationReport(report: RecommendationReport): string
   lines.push('');
 
   for (let i = 0; i < report.recommendations.length; i++) {
-    const rec = report.recommendations[i];
-    const icon = PRIORITY_ICONS[rec.priority] || '⚪';
-
-    lines.push(`  ─── ${i + 1}. ${icon} [${rec.priority.toUpperCase()}] ${rec.title} ───`);
-    lines.push('');
-    lines.push(`  ${rec.description}`);
-    lines.push('');
-
-    // Show signatures if available
-    if (rec.context?.signatures && rec.context.signatures.length > 0) {
-      lines.push('  Signatures:');
-      for (const sig of rec.context.signatures.slice(0, 5)) {
-        lines.push(`    ${sig}`);
-      }
-      lines.push('');
-    }
-
-    // Affected items
-    lines.push('  Affected:');
-    for (const a of rec.affected.slice(0, 10)) {
-      lines.push(`    • ${a.name} — ${a.file}${a.detail ? ` (${a.detail})` : ''}`);
-    }
-    if (rec.affected.length > 10) {
-      lines.push(`    ... and ${rec.affected.length - 10} more`);
-    }
-    lines.push('');
-
-    // Action plan
-    lines.push('  Action plan:');
-    for (let j = 0; j < rec.action_plan.length; j++) {
-      const step = rec.action_plan[j];
-      if (step.startsWith('  ')) {
-        // Indented sub-step
-        lines.push(`    ${step}`);
-      } else {
-        lines.push(`    ${j + 1}. ${step}`);
-      }
-    }
-    lines.push('');
-
-    lines.push(`  Impact: ${rec.impact}`);
-    lines.push(`  Effort: ${rec.effort}`);
-    lines.push('');
+    lines.push(...formatSingleRecommendation(report.recommendations[i], i));
   }
 
   // Claude-ready prompt block
@@ -802,6 +865,62 @@ export function formatRecommendationReport(report: RecommendationReport): string
 }
 
 // ─── Claude-Ready Implementation Brief ────────────────────────────────────
+
+function formatCategorySection(category: string, recs: Recommendation[], startTaskNum: number): { lines: string[]; nextTaskNum: number } {
+  const lines: string[] = [];
+  const categoryLabels: Record<string, string> = {
+    'dead-code': 'Phase 1: Remove Dead Code',
+    'duplicates': 'Phase 2: Deduplicate Shared Logic',
+    'circular-deps': 'Phase 3: Break Circular Dependencies',
+    'complexity': 'Phase 4: Reduce Complexity',
+    'coupling': 'Phase 5: Improve Module Coupling',
+  };
+
+  lines.push(`  ## ${categoryLabels[category] || category}`);
+  lines.push('');
+
+  let taskNum = startTaskNum;
+  for (const rec of recs) {
+    lines.push(`  ### Task ${taskNum}: ${rec.title}`);
+    lines.push(`  Priority: ${rec.priority} | Effort: ${rec.effort}`);
+    lines.push('');
+
+    // Files involved
+    const uniqueFiles = [...new Set(rec.affected.map(a => a.file))];
+    lines.push(`  Files: ${uniqueFiles.map(f => `\`${f}\``).join(', ')}`);
+
+    // Signatures
+    if (rec.context?.signatures && rec.context.signatures.length > 0) {
+      lines.push(`  Signatures:`);
+      for (const sig of rec.context.signatures) {
+        lines.push(`    - \`${sig}\``);
+      }
+    }
+
+    // What it calls (for context)
+    if (rec.context?.calls && rec.context.calls.length > 0) {
+      lines.push(`  Internal calls: ${rec.context.calls.slice(0, 12).join(', ')}${rec.context.calls.length > 12 ? ` (+${rec.context.calls.length - 12} more)` : ''}`);
+    }
+
+    lines.push('');
+    lines.push('  Steps:');
+    for (let j = 0; j < rec.action_plan.length; j++) {
+      const step = rec.action_plan[j];
+      if (step.startsWith('  ')) {
+        lines.push(`  ${step}`);
+      } else {
+        lines.push(`    ${j + 1}. ${step}`);
+      }
+    }
+    lines.push('');
+    lines.push(`  Expected impact: ${rec.impact}`);
+    lines.push('');
+
+    taskNum++;
+  }
+
+  return { lines, nextTaskNum: taskNum };
+}
 
 function generateClaudePrompt(report: RecommendationReport): string {
   const lines: string[] = [];
@@ -838,60 +957,15 @@ function generateClaudePrompt(report: RecommendationReport): string {
   }
 
   const categoryOrder = ['dead-code', 'duplicates', 'circular-deps', 'complexity', 'coupling'];
-  const categoryLabels: Record<string, string> = {
-    'dead-code': 'Phase 1: Remove Dead Code',
-    'duplicates': 'Phase 2: Deduplicate Shared Logic',
-    'circular-deps': 'Phase 3: Break Circular Dependencies',
-    'complexity': 'Phase 4: Reduce Complexity',
-    'coupling': 'Phase 5: Improve Module Coupling',
-  };
 
   let taskNum = 1;
   for (const cat of categoryOrder) {
     const recs = byCategory.get(cat);
     if (!recs || recs.length === 0) continue;
 
-    lines.push(`  ## ${categoryLabels[cat] || cat}`);
-    lines.push('');
-
-    for (const rec of recs) {
-      lines.push(`  ### Task ${taskNum}: ${rec.title}`);
-      lines.push(`  Priority: ${rec.priority} | Effort: ${rec.effort}`);
-      lines.push('');
-
-      // Files involved
-      const uniqueFiles = [...new Set(rec.affected.map(a => a.file))];
-      lines.push(`  Files: ${uniqueFiles.map(f => `\`${f}\``).join(', ')}`);
-
-      // Signatures
-      if (rec.context?.signatures && rec.context.signatures.length > 0) {
-        lines.push(`  Signatures:`);
-        for (const sig of rec.context.signatures) {
-          lines.push(`    - \`${sig}\``);
-        }
-      }
-
-      // What it calls (for context)
-      if (rec.context?.calls && rec.context.calls.length > 0) {
-        lines.push(`  Internal calls: ${rec.context.calls.slice(0, 12).join(', ')}${rec.context.calls.length > 12 ? ` (+${rec.context.calls.length - 12} more)` : ''}`);
-      }
-
-      lines.push('');
-      lines.push('  Steps:');
-      for (let j = 0; j < rec.action_plan.length; j++) {
-        const step = rec.action_plan[j];
-        if (step.startsWith('  ')) {
-          lines.push(`  ${step}`);
-        } else {
-          lines.push(`    ${j + 1}. ${step}`);
-        }
-      }
-      lines.push('');
-      lines.push(`  Expected impact: ${rec.impact}`);
-      lines.push('');
-
-      taskNum++;
-    }
+    const section = formatCategorySection(cat, recs, taskNum);
+    lines.push(...section.lines);
+    taskNum = section.nextTaskNum;
   }
 
   lines.push('  ## Verification');

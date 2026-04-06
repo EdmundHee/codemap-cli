@@ -139,6 +139,43 @@ function isFastAPIMiddleware(cls: ClassInfo): boolean {
   return FASTAPI_MIDDLEWARE_BASES.has(base) || FASTAPI_MIDDLEWARE_BASES.has(cls.extends);
 }
 
+const NON_MODEL_TYPES = new Set([
+  'Optional', 'List', 'Dict', 'Set', 'Tuple', 'Any',
+  'Union', 'str', 'int', 'float', 'bool', 'bytes',
+]);
+
+function detectOptionalAndDefault(field: ModelFieldInfo, type: string): void {
+  if (type.includes('Optional') || type.includes('None') || type.includes('= None')) {
+    field.required = false;
+  }
+  if (type.includes('=')) {
+    const defaultMatch = type.match(/=\s*(.+)$/);
+    if (defaultMatch) {
+      field.default = defaultMatch[1].trim();
+      field.required = false;
+    }
+  }
+}
+
+function detectFieldValidators(field: ModelFieldInfo, type: string): void {
+  if (!type.includes('Field(')) return;
+  const validators: string[] = [];
+  if (type.includes('min_length')) validators.push('min_length');
+  if (type.includes('max_length')) validators.push('max_length');
+  if (type.includes('ge=') || type.includes('gt=')) validators.push('minimum');
+  if (type.includes('le=') || type.includes('lt=')) validators.push('maximum');
+  if (type.includes('regex')) validators.push('regex');
+  if (validators.length > 0) field.validators = validators;
+}
+
+function detectRelatedModel(field: ModelFieldInfo, type: string): void {
+  if (!/^[A-Z]/.test(type.split('[')[0].split('|')[0].trim())) return;
+  const cleanType = type.split('[')[0].split('|')[0].split('=')[0].trim();
+  if (!NON_MODEL_TYPES.has(cleanType)) {
+    field.related_model = cleanType;
+  }
+}
+
 function extractPydanticFields(cls: ClassInfo): ModelFieldInfo[] {
   const fields: ModelFieldInfo[] = [];
 
@@ -149,41 +186,10 @@ function extractPydanticFields(cls: ClassInfo): ModelFieldInfo[] {
       required: true,
     };
 
-    // Detect optional/default
     const type = prop.type || '';
-    if (type.includes('Optional') || type.includes('None') || type.includes('= None')) {
-      field.required = false;
-    }
-    if (type.includes('=')) {
-      const defaultMatch = type.match(/=\s*(.+)$/);
-      if (defaultMatch) {
-        field.default = defaultMatch[1].trim();
-        field.required = false;
-      }
-    }
-
-    // Detect Field() validators
-    if (type.includes('Field(')) {
-      const validators: string[] = [];
-      if (type.includes('min_length')) validators.push('min_length');
-      if (type.includes('max_length')) validators.push('max_length');
-      if (type.includes('ge=') || type.includes('gt=')) validators.push('minimum');
-      if (type.includes('le=') || type.includes('lt=')) validators.push('maximum');
-      if (type.includes('regex')) validators.push('regex');
-      if (validators.length > 0) field.validators = validators;
-    }
-
-    // Detect nested model references
-    if (/^[A-Z]/.test(type.split('[')[0].split('|')[0].trim())) {
-      // Capitalize type likely references another model
-      const cleanType = type.split('[')[0].split('|')[0].split('=')[0].trim();
-      if (cleanType !== 'Optional' && cleanType !== 'List' && cleanType !== 'Dict' &&
-          cleanType !== 'Set' && cleanType !== 'Tuple' && cleanType !== 'Any' &&
-          cleanType !== 'Union' && cleanType !== 'str' && cleanType !== 'int' &&
-          cleanType !== 'float' && cleanType !== 'bool' && cleanType !== 'bytes') {
-        field.related_model = cleanType;
-      }
-    }
+    detectOptionalAndDefault(field, type);
+    detectFieldValidators(field, type);
+    detectRelatedModel(field, type);
 
     fields.push(field);
   }
@@ -317,6 +323,306 @@ function extractRouters(parsed: ParsedFile[]): Map<string, RouterInfo> {
   return routers;
 }
 
+// ─── Phase Extraction Helpers ─────────────────────────────────────────────
+
+interface ParsedRouteDecorator {
+  decorator: string;
+  method: string;
+  path: string;
+  isWebSocket: boolean;
+}
+
+/**
+ * Scan function decorators for a FastAPI route decorator and extract its method/path.
+ * Returns null if no route decorator found.
+ */
+function parseRouteDecorator(funcDecorators: string[]): ParsedRouteDecorator | null {
+  for (const d of funcDecorators) {
+    if (isRouteDecorator(d)) {
+      const method = extractRouteMethod(d);
+      let routeMethod: string;
+      let isWebSocket = false;
+
+      if (method === 'websocket') {
+        isWebSocket = true;
+        routeMethod = 'WEBSOCKET';
+      } else if (method === 'api_route') {
+        const methods = extractListKwarg(d, 'methods');
+        routeMethod = methods.length > 0 ? methods.join(',') : 'GET';
+      } else {
+        routeMethod = (method || 'GET').toUpperCase();
+      }
+
+      return { decorator: d, method: routeMethod, path: extractRoutePath(d), isWebSocket };
+    }
+  }
+  return null;
+}
+
+/**
+ * Enrich a RouteInfo with metadata extracted from the route decorator
+ * (response_model, status_code, tags, dependencies, auth).
+ */
+function enrichRouteMetadata(
+  route: RouteInfo,
+  routeDecorator: string,
+  func: FunctionInfo,
+  routerInfo: RouterInfo | undefined
+): void {
+  const responseModel = extractDecoratorKwargValue(routeDecorator, 'response_model');
+  if (responseModel) route.response_model = responseModel;
+
+  const statusCode = extractDecoratorKwargValue(routeDecorator, 'status_code');
+  if (statusCode) {
+    const parsed = parseInt(statusCode);
+    if (!isNaN(parsed)) route.status_codes = [parsed];
+  }
+
+  const tags = extractListKwarg(routeDecorator, 'tags');
+  if (tags.length > 0) {
+    route.tags = tags;
+  } else if (routerInfo?.tags.length) {
+    route.tags = routerInfo.tags;
+  }
+
+  const deps = extractDependencies(func);
+  if (deps.length > 0) route.dependencies = deps;
+
+  const authDeps = deps.filter((d) =>
+    d.toLowerCase().includes('auth') ||
+    d.toLowerCase().includes('token') ||
+    d.toLowerCase().includes('permission') ||
+    d.toLowerCase().includes('current_user')
+  );
+  if (authDeps.length > 0) route.auth = authDeps;
+}
+
+function extractRoutesFromFunction(
+  func: FunctionInfo,
+  filePath: string,
+  routerInfo: RouterInfo | undefined
+): { route?: RouteInfo; middleware: Record<string, MiddlewareInfo> } {
+  const funcDecorators: string[] = (func as any).decorators || [];
+  const middlewareResult: Record<string, MiddlewareInfo> = {};
+
+  const parsed = parseRouteDecorator(funcDecorators);
+  if (!parsed) {
+    return { route: undefined, middleware: middlewareResult };
+  }
+
+  const prefix = routerInfo?.prefix || '';
+  const fullPath = prefix + parsed.path;
+
+  const route: RouteInfo = {
+    method: parsed.method.includes(',') ? parsed.method.split(',') : parsed.method,
+    path: fullPath,
+    handler: func.name,
+    file: filePath,
+    decorators: funcDecorators,
+    params: extractRouteParams(func),
+    framework: 'fastapi',
+    route_type: parsed.isWebSocket ? 'websocket' : 'api',
+  };
+
+  enrichRouteMetadata(route, parsed.decorator, func, routerInfo);
+
+  return { route, middleware: middlewareResult };
+}
+
+function extractMiddlewareFromFunction(
+  func: FunctionInfo,
+  filePath: string
+): Record<string, MiddlewareInfo> {
+  const result: Record<string, MiddlewareInfo> = {};
+  const funcDecorators: string[] = (func as any).decorators || [];
+
+  // Check for middleware decorator pattern
+  for (const d of funcDecorators) {
+    if (d.includes('middleware')) {
+      const mw: MiddlewareInfo = {
+        name: func.name,
+        file: filePath,
+        framework: 'fastapi',
+        type: 'function_middleware',
+      };
+      result[func.name] = mw;
+    }
+  }
+
+  // Check for event handlers (startup/shutdown/lifespan)
+  for (const d of funcDecorators) {
+    const name = stripDecorator(d);
+    if (name === 'on_event' || name === 'app.on_event') {
+      const eventType = extractStringArg(extractDecoratorArgs(d));
+      // Store as a special middleware-like entry
+      const mw: MiddlewareInfo = {
+        name: func.name,
+        file: filePath,
+        framework: 'fastapi',
+        type: 'function_middleware',
+        methods: [eventType || 'lifecycle'],
+      };
+      result[`event:${func.name}`] = mw;
+    }
+  }
+
+  // Check for exception handlers
+  for (const d of funcDecorators) {
+    if (d.includes('exception_handler')) {
+      const mw: MiddlewareInfo = {
+        name: func.name,
+        file: filePath,
+        framework: 'fastapi',
+        type: 'function_middleware',
+        methods: ['exception_handler'],
+      };
+      result[`exception:${func.name}`] = mw;
+    }
+  }
+
+  return result;
+}
+
+function extractClassEntities(
+  cls: ClassInfo,
+  filePath: string,
+  routerInfo: RouterInfo | undefined
+): {
+  routes: RouteInfo[];
+  model?: ModelInfo;
+  middleware?: MiddlewareInfo;
+  securitySchemes: string[];
+} {
+  const routes: RouteInfo[] = [];
+  const securitySchemes: string[] = [];
+  let model: ModelInfo | undefined;
+  let mw: MiddlewareInfo | undefined;
+
+  // Pydantic models
+  if (isPydanticModel(cls)) {
+    const fields = extractPydanticFields(cls);
+    const config = extractPydanticConfig(cls);
+
+    model = {
+      name: cls.name,
+      file: filePath,
+      framework: 'fastapi',
+      kind: isPydanticSettings(cls) ? 'pydantic_settings' : 'pydantic_model',
+      extends: cls.extends || undefined,
+      fields,
+      relationships: fields
+        .filter((f) => f.related_model)
+        .map((f) => f.related_model!),
+      decorators: cls.decorators,
+      config,
+    };
+  }
+
+  // Middleware classes
+  if (isFastAPIMiddleware(cls)) {
+    mw = {
+      name: cls.name,
+      file: filePath,
+      framework: 'fastapi',
+      type: 'class_middleware',
+      methods: cls.methods.map((m) => m.name),
+    };
+  }
+
+  // Security schemes
+  if (SECURITY_CLASSES.has(cls.name) || SECURITY_CLASSES.has(cls.extends || '')) {
+    securitySchemes.push(cls.name);
+  }
+
+  // Check for router class (CBV pattern with cbv decorator or similar)
+  const hasRouteDecorators = cls.methods.some((m) =>
+    m.decorators.some((d) => isRouteDecorator(d))
+  );
+
+  if (hasRouteDecorators) {
+    for (const method of cls.methods) {
+      for (const d of method.decorators) {
+        if (isRouteDecorator(d)) {
+          const httpMethod = extractRouteMethod(d);
+          const path = extractRoutePath(d);
+          const prefix = routerInfo?.prefix || '';
+
+          routes.push({
+            method: (httpMethod || 'GET').toUpperCase(),
+            path: prefix + path,
+            handler: `${cls.name}.${method.name}`,
+            file: filePath,
+            decorators: method.decorators,
+            params: [], // Methods need different param extraction
+            framework: 'fastapi',
+            route_type: httpMethod === 'websocket' ? 'websocket' : 'api',
+          });
+        }
+      }
+    }
+  }
+
+  return { routes, model, middleware: mw, securitySchemes };
+}
+
+function buildDependencyGraph(
+  routes: RouteInfo[],
+  parsed: ParsedFile[]
+): DependencyInfo[] {
+  const dependencies: DependencyInfo[] = [];
+
+  // First pass: collect dependency names from routes
+  const depProviders = new Set<string>();
+  for (const route of routes) {
+    if (route.dependencies) {
+      for (const dep of route.dependencies) {
+        depProviders.add(dep);
+      }
+    }
+  }
+
+  // Second pass: find provider functions
+  for (const p of parsed) {
+    if (p.file.language !== 'python') continue;
+
+    for (const func of p.functions) {
+      if (depProviders.has(func.name)) {
+        const subDeps = extractDependencies(func);
+        const dep: DependencyInfo = {
+          name: func.name,
+          file: p.file.relative,
+          framework: 'fastapi',
+          return_type: func.return_type || 'Any',
+          depends_on: subDeps,
+          used_by: routes
+            .filter((r) => r.dependencies?.includes(func.name))
+            .map((r) => r.handler),
+        };
+        dependencies.push(dep);
+      }
+    }
+  }
+
+  return dependencies;
+}
+
+function extractModuleLevelSecurity(parsed: ParsedFile[]): string[] {
+  const securitySchemes: string[] = [];
+
+  for (const p of parsed) {
+    if (p.file.language !== 'python') continue;
+    for (const call of p.moduleCalls || []) {
+      for (const secClass of SECURITY_CLASSES) {
+        if (call.includes(secClass)) {
+          securitySchemes.push(secClass);
+        }
+      }
+    }
+  }
+
+  return securitySchemes;
+}
+
 // ─── FastAPI Enricher ──────────────────────────────────────────────────────
 
 export class FastAPIEnricher implements FrameworkEnricher {
@@ -335,7 +641,6 @@ export class FastAPIEnricher implements FrameworkEnricher {
     const routes: RouteInfo[] = [];
     const models: Record<string, ModelInfo> = {};
     const middleware: Record<string, MiddlewareInfo> = {};
-    const dependencies: DependencyInfo[] = [];
     const securitySchemes: string[] = [];
 
     // First pass: collect router prefixes
@@ -348,256 +653,29 @@ export class FastAPIEnricher implements FrameworkEnricher {
 
       // ── Process functions (route handlers) ──
       for (const func of p.functions) {
-        const funcDecorators: string[] = (func as any).decorators || [];
+        const { route, middleware: routeMw } = extractRoutesFromFunction(func, p.file.relative, routerInfo);
+        if (route) routes.push(route);
+        Object.assign(middleware, routeMw);
 
-        let isRoute = false;
-        let routeMethod = '';
-        let routePath = '';
-        let isWebSocket = false;
-        let routeDecorator = '';
-
-        // Check decorators for route patterns
-        for (const d of funcDecorators) {
-          if (isRouteDecorator(d)) {
-            isRoute = true;
-            routeDecorator = d;
-            const method = extractRouteMethod(d);
-            if (method === 'websocket') {
-              isWebSocket = true;
-              routeMethod = 'WEBSOCKET';
-            } else if (method === 'api_route') {
-              // api_route supports multiple methods
-              const methods = extractListKwarg(d, 'methods');
-              routeMethod = methods.length > 0 ? methods.join(',') : 'GET';
-            } else {
-              routeMethod = (method || 'GET').toUpperCase();
-            }
-            routePath = extractRoutePath(d);
-            break;
-          }
-        }
-
-        if (isRoute) {
-          // Prepend router prefix if available
-          const prefix = routerInfo?.prefix || '';
-          const fullPath = prefix + routePath;
-
-          const route: RouteInfo = {
-            method: routeMethod.includes(',') ? routeMethod.split(',') : routeMethod,
-            path: fullPath,
-            handler: func.name,
-            file: p.file.relative,
-            decorators: funcDecorators,
-            params: extractRouteParams(func),
-            framework: 'fastapi',
-            route_type: isWebSocket ? 'websocket' : 'api',
-          };
-
-          // Extract response_model
-          const responseModel = extractDecoratorKwargValue(routeDecorator, 'response_model');
-          if (responseModel) route.response_model = responseModel;
-
-          // Extract status_code
-          const statusCode = extractDecoratorKwargValue(routeDecorator, 'status_code');
-          if (statusCode) {
-            const parsed = parseInt(statusCode);
-            if (!isNaN(parsed)) route.status_codes = [parsed];
-          }
-
-          // Extract tags
-          const tags = extractListKwarg(routeDecorator, 'tags');
-          if (tags.length > 0) {
-            route.tags = tags;
-          } else if (routerInfo?.tags.length) {
-            route.tags = routerInfo.tags;
-          }
-
-          // Extract dependencies
-          const deps = extractDependencies(func);
-          if (deps.length > 0) route.dependencies = deps;
-
-          // Check for auth-related dependencies
-          const authDeps = deps.filter((d) =>
-            d.toLowerCase().includes('auth') ||
-            d.toLowerCase().includes('token') ||
-            d.toLowerCase().includes('permission') ||
-            d.toLowerCase().includes('current_user')
-          );
-          if (authDeps.length > 0) route.auth = authDeps;
-
-          routes.push(route);
-        }
-
-        // Check for middleware decorator pattern
-        for (const d of funcDecorators) {
-          if (d.includes('middleware')) {
-            const mw: MiddlewareInfo = {
-              name: func.name,
-              file: p.file.relative,
-              framework: 'fastapi',
-              type: 'function_middleware',
-            };
-            middleware[func.name] = mw;
-          }
-        }
-
-        // Check for event handlers (startup/shutdown/lifespan)
-        for (const d of funcDecorators) {
-          const name = stripDecorator(d);
-          if (name === 'on_event' || name === 'app.on_event') {
-            const eventType = extractStringArg(extractDecoratorArgs(d));
-            // Store as a special middleware-like entry
-            const mw: MiddlewareInfo = {
-              name: func.name,
-              file: p.file.relative,
-              framework: 'fastapi',
-              type: 'function_middleware',
-              methods: [eventType || 'lifecycle'],
-            };
-            middleware[`event:${func.name}`] = mw;
-          }
-        }
-
-        // Check for exception handlers
-        for (const d of funcDecorators) {
-          if (d.includes('exception_handler')) {
-            const mw: MiddlewareInfo = {
-              name: func.name,
-              file: p.file.relative,
-              framework: 'fastapi',
-              type: 'function_middleware',
-              methods: ['exception_handler'],
-            };
-            middleware[`exception:${func.name}`] = mw;
-          }
-        }
+        const funcMw = extractMiddlewareFromFunction(func, p.file.relative);
+        Object.assign(middleware, funcMw);
       }
 
       // ── Process classes ──
       for (const cls of p.classes) {
-        // Pydantic models
-        if (isPydanticModel(cls)) {
-          const fields = extractPydanticFields(cls);
-          const config = extractPydanticConfig(cls);
-
-          const model: ModelInfo = {
-            name: cls.name,
-            file: p.file.relative,
-            framework: 'fastapi',
-            kind: isPydanticSettings(cls) ? 'pydantic_settings' : 'pydantic_model',
-            extends: cls.extends || undefined,
-            fields,
-            relationships: fields
-              .filter((f) => f.related_model)
-              .map((f) => f.related_model!),
-            decorators: cls.decorators,
-            config,
-          };
-
-          models[cls.name] = model;
-        }
-
-        // Middleware classes
-        if (isFastAPIMiddleware(cls)) {
-          const mw: MiddlewareInfo = {
-            name: cls.name,
-            file: p.file.relative,
-            framework: 'fastapi',
-            type: 'class_middleware',
-            methods: cls.methods.map((m) => m.name),
-          };
-          middleware[cls.name] = mw;
-        }
-
-        // Security schemes
-        if (SECURITY_CLASSES.has(cls.name) || SECURITY_CLASSES.has(cls.extends || '')) {
-          securitySchemes.push(cls.name);
-        }
-
-        // Check for router class (CBV pattern with cbv decorator or similar)
-        const hasRouteDecorators = cls.methods.some((m) =>
-          m.decorators.some((d) => isRouteDecorator(d))
-        );
-
-        if (hasRouteDecorators) {
-          for (const method of cls.methods) {
-            for (const d of method.decorators) {
-              if (isRouteDecorator(d)) {
-                const httpMethod = extractRouteMethod(d);
-                const path = extractRoutePath(d);
-                const prefix = routerInfo?.prefix || '';
-
-                routes.push({
-                  method: (httpMethod || 'GET').toUpperCase(),
-                  path: prefix + path,
-                  handler: `${cls.name}.${method.name}`,
-                  file: p.file.relative,
-                  decorators: method.decorators,
-                  params: [], // Methods need different param extraction
-                  framework: 'fastapi',
-                  route_type: httpMethod === 'websocket' ? 'websocket' : 'api',
-                });
-              }
-            }
-          }
-        }
-      }
-
-      // ── Extract dependency providers ──
-      for (const func of p.functions) {
-        // A dependency provider is a function that's referenced in Depends()
-        // We detect this by checking if any route's params reference this function
-        const funcDeps = extractDependencies(func);
-        if (funcDeps.length > 0 || func.calls.some((c) => c.includes('Depends'))) {
-          // This function uses Depends(), might also be a dependency itself
-        }
+        const result = extractClassEntities(cls, p.file.relative, routerInfo);
+        routes.push(...result.routes);
+        if (result.model) models[result.model.name] = result.model;
+        if (result.middleware) middleware[result.middleware.name] = result.middleware;
+        securitySchemes.push(...result.securitySchemes);
       }
     }
 
     // ── Build dependency graph ──
-    // Scan all routes for Depends() references and build dependency tree
-    const depProviders = new Set<string>();
-    for (const route of routes) {
-      if (route.dependencies) {
-        for (const dep of route.dependencies) {
-          depProviders.add(dep);
-        }
-      }
-    }
-
-    // Find dependency provider functions
-    for (const p of parsed) {
-      if (p.file.language !== 'python') continue;
-
-      for (const func of p.functions) {
-        if (depProviders.has(func.name)) {
-          const subDeps = extractDependencies(func);
-          const dep: DependencyInfo = {
-            name: func.name,
-            file: p.file.relative,
-            framework: 'fastapi',
-            return_type: func.return_type || 'Any',
-            depends_on: subDeps,
-            used_by: routes
-              .filter((r) => r.dependencies?.includes(func.name))
-              .map((r) => r.handler),
-          };
-          dependencies.push(dep);
-        }
-      }
-    }
+    const dependencies = buildDependencyGraph(routes, parsed);
 
     // ── Detect security module-level variables ──
-    for (const p of parsed) {
-      if (p.file.language !== 'python') continue;
-      for (const call of p.moduleCalls || []) {
-        for (const secClass of SECURITY_CLASSES) {
-          if (call.includes(secClass)) {
-            securitySchemes.push(secClass);
-          }
-        }
-      }
-    }
+    securitySchemes.push(...extractModuleLevelSecurity(parsed));
 
     // ── Populate CodemapData ──
     data.routes.push(...routes);

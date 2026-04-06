@@ -120,6 +120,53 @@ function buildSymbolMap(parsedFiles: ParsedFile[]): Map<string, Map<string, stri
   return symbolMap;
 }
 
+function buildGraphFromImports(importGraph: ImportGraph): Map<string, string[]> {
+  const graph = new Map<string, string[]>();
+  for (const [file, imports] of Object.entries(importGraph)) {
+    graph.set(file, imports);
+  }
+  for (const imports of Object.values(importGraph)) {
+    for (const imp of imports) {
+      if (!graph.has(imp)) graph.set(imp, []);
+    }
+  }
+  return graph;
+}
+
+function resolveEdgeSymbols(
+  file: string,
+  imp: string,
+  symbolMap: Map<string, Map<string, string[]>>
+): string[] {
+  const fileSymbolMap = symbolMap.get(file);
+  if (!fileSymbolMap) return [];
+  for (const [specifier, syms] of fileSymbolMap) {
+    if (imp.endsWith(specifier.replace(/^\.\//, '')) || imp.includes(specifier)) {
+      return syms;
+    }
+  }
+  return [];
+}
+
+function buildSCCEdges(
+  scc: string[],
+  graph: Map<string, string[]>,
+  symbolMap: Map<string, Map<string, string[]>>
+): CycleEdge[] {
+  const fileSet = new Set(scc);
+  const edges: CycleEdge[] = [];
+  for (const file of scc) {
+    const imports = graph.get(file) || [];
+    for (const imp of imports) {
+      if (fileSet.has(imp) && imp !== file) {
+        const symbols = resolveEdgeSymbols(file, imp, symbolMap);
+        edges.push({ sourceFile: file, targetFile: imp, symbols });
+      }
+    }
+  }
+  return edges;
+}
+
 /**
  * Detect circular dependencies in the import graph.
  * Returns structured cycle data with minimum cut analysis.
@@ -128,64 +175,16 @@ export function detectCircularDeps(
   importGraph: ImportGraph,
   parsedFiles: ParsedFile[]
 ): CycleData[] {
-  // Convert ImportGraph to adjacency list
-  const graph = new Map<string, string[]>();
-  for (const [file, imports] of Object.entries(importGraph)) {
-    graph.set(file, imports);
-  }
-  // Ensure all imported files are nodes even if they have no outgoing edges
-  for (const imports of Object.values(importGraph)) {
-    for (const imp of imports) {
-      if (!graph.has(imp)) graph.set(imp, []);
-    }
-  }
-
+  const graph = buildGraphFromImports(importGraph);
   const symbolMap = buildSymbolMap(parsedFiles);
-
-  // Find SCCs
   const sccs = tarjanSCC(graph);
-
-  // Filter to only cycles (SCCs with >1 node)
   const cycles: CycleData[] = [];
 
   for (const scc of sccs) {
     if (scc.length <= 1) continue;
-
-    const fileSet = new Set(scc);
-    const edges: CycleEdge[] = [];
-
-    // Find all edges within this SCC
-    for (const file of scc) {
-      const imports = graph.get(file) || [];
-      for (const imp of imports) {
-        if (fileSet.has(imp) && imp !== file) {
-          // Look up symbols for this edge
-          const fileSymbolMap = symbolMap.get(file);
-          let symbols: string[] = [];
-          if (fileSymbolMap) {
-            // Try to find symbols — the import specifier in parsedFiles may differ from resolved path
-            for (const [specifier, syms] of fileSymbolMap) {
-              if (imp.endsWith(specifier.replace(/^\.\//, '')) || imp.includes(specifier)) {
-                symbols = syms;
-                break;
-              }
-            }
-          }
-
-          edges.push({ sourceFile: file, targetFile: imp, symbols });
-        }
-      }
-    }
-
-    // Find minimum cut: the edge with fewest symbols
+    const edges = buildSCCEdges(scc, graph, symbolMap);
     const { minimumCut, minimumCutSymbolCount } = computeMinimumCut(edges);
-
-    cycles.push({
-      files: scc.sort(),
-      edges,
-      minimumCut,
-      minimumCutSymbolCount,
-    });
+    cycles.push({ files: scc.sort(), edges, minimumCut, minimumCutSymbolCount });
   }
 
   return cycles;

@@ -245,108 +245,161 @@ function generateMiddlewareSection(data: CodemapData): string[] {
 }
 
 /**
+ * Helper: Generate SIGNALS section (Django signals).
+ */
+function generateSignalsSection(signals: any[]): string[] {
+  if (!signals?.length) return [];
+  const lines: string[] = [];
+  lines.push('## SIGNALS');
+  for (const signal of signals) {
+    const sender = signal.sender ? ` (sender: ${signal.sender})` : '';
+    lines.push(`${signal.signal} → ${signal.receiver}${sender} [${signal.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate ADMIN section (Django admin registrations).
+ */
+function generateAdminSection(admin: any[]): string[] {
+  if (!admin?.length) return [];
+  const lines: string[] = [];
+  lines.push('## ADMIN');
+  for (const entry of admin) {
+    const model = entry.model ? ` → ${entry.model}` : '';
+    lines.push(`${entry.admin_class}${model} [${entry.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate FORMS section (Django forms).
+ */
+function generateFormsSection(forms: any[]): string[] {
+  if (!forms?.length) return [];
+  const lines: string[] = [];
+  lines.push('## FORMS');
+  for (const form of forms) {
+    const model = form.model ? ` (model: ${form.model})` : '';
+    const validators = form.validators?.length > 0 ? ` [validators: ${form.validators.join(', ')}]` : '';
+    lines.push(`${form.kind}: ${form.name}${model}${validators} [${form.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate MANAGEMENT_COMMANDS section (Django management commands).
+ */
+function generateManagementCommandsSection(cmds: any[]): string[] {
+  if (!cmds?.length) return [];
+  const lines: string[] = [];
+  lines.push('## MANAGEMENT_COMMANDS');
+  for (const cmd of cmds) {
+    const help = cmd.help ? ` — ${cmd.help}` : '';
+    lines.push(`${cmd.name}${help} [${cmd.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate TEMPLATE_TAGS section (Django template tags).
+ */
+function generateTemplateTagsSection(tags: any[]): string[] {
+  if (!tags?.length) return [];
+  const lines: string[] = [];
+  lines.push('## TEMPLATE_TAGS');
+  for (const tag of tags) {
+    lines.push(`${tag.kind}: ${tag.name} → ${tag.handler} [${tag.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate DEPENDENCIES (DI) section (FastAPI DI providers).
+ */
+function generateDISection(providers: any[]): string[] {
+  if (!providers?.length) return [];
+  const lines: string[] = [];
+  lines.push('## DEPENDENCIES (DI)');
+  for (const dep of providers) {
+    const subDeps = dep.depends_on?.length > 0 ? ` ← ${dep.depends_on.join(', ')}` : '';
+    const usedBy = dep.used_by?.length > 0 ? ` → ${dep.used_by.join(', ')}` : '';
+    lines.push(`${dep.name}: ${dep.return_type}${subDeps}${usedBy} [${dep.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate PLUGINS section (Nuxt plugins).
+ */
+function generatePluginsSection(plugins: any[]): string[] {
+  if (!plugins?.length) return [];
+  const lines: string[] = [];
+  lines.push('## PLUGINS');
+  for (const plugin of plugins) {
+    const mode = plugin.mode ? ` [${plugin.mode}]` : '';
+    const provides = plugin.provides?.length > 0 ? ` provides: ${plugin.provides.join(', ')}` : '';
+    lines.push(`${plugin.name}${mode}${provides} [${plugin.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate LAYOUTS section (Nuxt layouts).
+ */
+function generateLayoutsSection(layouts: any[]): string[] {
+  if (!layouts?.length) return [];
+  const lines: string[] = [];
+  lines.push('## LAYOUTS');
+  for (const layout of layouts) {
+    const usedBy = layout.used_by?.length > 0 ? ` → ${layout.used_by.length} pages` : '';
+    lines.push(`${layout.name}${usedBy} [${layout.file}]`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Helper: Generate COMPONENTS section (Nuxt components).
+ */
+function generateComponentsSection(components: any[]): string[] {
+  if (!components?.length) return [];
+  const lines: string[] = [];
+  lines.push('## COMPONENTS');
+  const compNames = components.map((c: any) => c.name);
+  if (compNames.length <= 20) {
+    lines.push(compNames.join(', '));
+  } else {
+    const shown = compNames.slice(0, 15).join(', ');
+    lines.push(`${shown} ... +${compNames.length - 15} more`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
  * Helper: Generate framework-specific extras (signals, admin, forms, plugins, etc.).
  */
 function generateFrameworkExtrasSection(data: CodemapData): string[] {
-  const lines: string[] = [];
-  const extData = data as any;
-
-  // Django signals
-  if (extData.signals?.length > 0) {
-    lines.push('## SIGNALS');
-    for (const signal of extData.signals) {
-      const sender = signal.sender ? ` (sender: ${signal.sender})` : '';
-      lines.push(`${signal.signal} → ${signal.receiver}${sender} [${signal.file}]`);
-    }
-    lines.push('');
-  }
-
-  // Django admin registrations
-  if (extData.admin?.length > 0) {
-    lines.push('## ADMIN');
-    for (const admin of extData.admin) {
-      const model = admin.model ? ` → ${admin.model}` : '';
-      lines.push(`${admin.admin_class}${model} [${admin.file}]`);
-    }
-    lines.push('');
-  }
-
-  // Django forms
-  if (extData.forms?.length > 0) {
-    lines.push('## FORMS');
-    for (const form of extData.forms) {
-      const model = form.model ? ` (model: ${form.model})` : '';
-      const validators = form.validators?.length > 0 ? ` [validators: ${form.validators.join(', ')}]` : '';
-      lines.push(`${form.kind}: ${form.name}${model}${validators} [${form.file}]`);
-    }
-    lines.push('');
-  }
-
-  // Django management commands
-  if (extData.management_commands?.length > 0) {
-    lines.push('## MANAGEMENT_COMMANDS');
-    for (const cmd of extData.management_commands) {
-      const help = cmd.help ? ` — ${cmd.help}` : '';
-      lines.push(`${cmd.name}${help} [${cmd.file}]`);
-    }
-    lines.push('');
-  }
-
-  // Django template tags
-  if (extData.template_tags?.length > 0) {
-    lines.push('## TEMPLATE_TAGS');
-    for (const tag of extData.template_tags) {
-      lines.push(`${tag.kind}: ${tag.name} → ${tag.handler} [${tag.file}]`);
-    }
-    lines.push('');
-  }
-
-  // FastAPI dependencies
-  if (extData.di_providers?.length > 0) {
-    lines.push('## DEPENDENCIES (DI)');
-    for (const dep of extData.di_providers) {
-      const subDeps = dep.depends_on?.length > 0 ? ` ← ${dep.depends_on.join(', ')}` : '';
-      const usedBy = dep.used_by?.length > 0 ? ` → ${dep.used_by.join(', ')}` : '';
-      lines.push(`${dep.name}: ${dep.return_type}${subDeps}${usedBy} [${dep.file}]`);
-    }
-    lines.push('');
-  }
-
-  // Nuxt plugins
-  if (extData.plugins?.length > 0) {
-    lines.push('## PLUGINS');
-    for (const plugin of extData.plugins) {
-      const mode = plugin.mode ? ` [${plugin.mode}]` : '';
-      const provides = plugin.provides?.length > 0 ? ` provides: ${plugin.provides.join(', ')}` : '';
-      lines.push(`${plugin.name}${mode}${provides} [${plugin.file}]`);
-    }
-    lines.push('');
-  }
-
-  // Nuxt layouts
-  if (extData.layouts?.length > 0) {
-    lines.push('## LAYOUTS');
-    for (const layout of extData.layouts) {
-      const usedBy = layout.used_by?.length > 0 ? ` → ${layout.used_by.length} pages` : '';
-      lines.push(`${layout.name}${usedBy} [${layout.file}]`);
-    }
-    lines.push('');
-  }
-
-  // Nuxt components
-  if (extData.components?.length > 0) {
-    lines.push('## COMPONENTS');
-    const compNames = extData.components.map((c: any) => c.name);
-    if (compNames.length <= 20) {
-      lines.push(compNames.join(', '));
-    } else {
-      const shown = compNames.slice(0, 15).join(', ');
-      lines.push(`${shown} ... +${compNames.length - 15} more`);
-    }
-    lines.push('');
-  }
-
-  return lines;
+  const ext = data as any;
+  return [
+    ...generateSignalsSection(ext.signals),
+    ...generateAdminSection(ext.admin),
+    ...generateFormsSection(ext.forms),
+    ...generateManagementCommandsSection(ext.management_commands),
+    ...generateTemplateTagsSection(ext.template_tags),
+    ...generateDISection(ext.di_providers),
+    ...generatePluginsSection(ext.plugins),
+    ...generateLayoutsSection(ext.layouts),
+    ...generateComponentsSection(ext.components),
+  ];
 }
 
 /**

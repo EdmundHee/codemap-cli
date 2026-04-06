@@ -49,6 +49,90 @@ async function initTreeSitter(): Promise<void> {
   Parser.setLanguage(PythonLanguage);
 }
 
+function extractPlainImports(rootNode: any): ImportInfo[] {
+  const imports: ImportInfo[] = [];
+  const importStatements = findNodes(rootNode, 'import_statement');
+  for (const node of importStatements) {
+    const names = node.namedChildren.filter(
+      (c: any) => c.type === 'dotted_name' || c.type === 'aliased_import'
+    );
+    for (const nameNode of names) {
+      const moduleName =
+        nameNode.type === 'aliased_import'
+          ? nameNode.childForFieldName('name')?.text || nameNode.text
+          : nameNode.text;
+      imports.push({
+        from: moduleName,
+        symbols: [moduleName.split('.').pop() || moduleName],
+        isDefault: false,
+        isNamespace: true,
+      });
+    }
+  }
+  return imports;
+}
+
+function extractFromImportSymbols(node: any, moduleNode: any): string[] {
+  const symbols: string[] = [];
+  for (const child of node.namedChildren) {
+    if (child.type === 'dotted_name' && child !== moduleNode) {
+      symbols.push(child.text);
+    } else if (child.type === 'aliased_import') {
+      const name = child.childForFieldName('name');
+      symbols.push(name?.text || child.text);
+    } else if (child.type === 'wildcard_import') {
+      symbols.push('*');
+    }
+  }
+  return symbols;
+}
+
+function extractFromImports(rootNode: any): ImportInfo[] {
+  const imports: ImportInfo[] = [];
+  const fromImports = findNodes(rootNode, 'import_from_statement');
+  for (const node of fromImports) {
+    const moduleNode = node.childForFieldName('module_name');
+    const moduleName = moduleNode?.text || '';
+    if (!moduleName) continue;
+    const symbols = extractFromImportSymbols(node, moduleNode);
+    imports.push({
+      from: moduleName,
+      symbols,
+      isDefault: false,
+      isNamespace: symbols.includes('*'),
+    });
+  }
+  return imports;
+}
+
+function parseParamNode(child: any): ParamInfo | null {
+  if (child.type === 'identifier') {
+    return { name: child.text, type: 'unknown' };
+  }
+  if (child.type === 'typed_parameter') {
+    const name = child.childForFieldName('name')?.text ||
+      child.namedChildren.find((c: any) => c.type === 'identifier')?.text || 'unknown';
+    const typeNode = child.childForFieldName('type');
+    return { name, type: truncateType(typeNode?.text || 'unknown') };
+  }
+  if (child.type === 'default_parameter') {
+    const name = child.childForFieldName('name')?.text || 'unknown';
+    const value = child.childForFieldName('value')?.text;
+    return { name, type: 'unknown', optional: true, ...(value && { default: value }) };
+  }
+  if (child.type === 'typed_default_parameter') {
+    const name = child.childForFieldName('name')?.text || 'unknown';
+    const typeNode = child.childForFieldName('type');
+    const type = truncateType(typeNode?.text || 'unknown');
+    const value = child.childForFieldName('value')?.text;
+    return { name, type, optional: true, ...(value && { default: value }) };
+  }
+  if (child.type === 'list_splat_pattern' || child.type === 'dictionary_splat_pattern') {
+    return { name: child.text, type: 'unknown' };
+  }
+  return null;
+}
+
 export class PythonParser implements ParserInterface {
   async parse(file: ScannedFile): Promise<ParsedFile> {
     await initTreeSitter();
@@ -216,58 +300,10 @@ export class PythonParser implements ParserInterface {
     return functions;
   }
 
-  private extractImports(rootNode: any, source: string): ImportInfo[] {
+  private extractImports(rootNode: any, _source: string): ImportInfo[] {
     const imports: ImportInfo[] = [];
-
-    // "import x" and "import x as y"
-    const importStatements = findNodes(rootNode, 'import_statement');
-    for (const node of importStatements) {
-      const names = node.namedChildren.filter(
-        (c: any) => c.type === 'dotted_name' || c.type === 'aliased_import'
-      );
-      for (const nameNode of names) {
-        const moduleName =
-          nameNode.type === 'aliased_import'
-            ? nameNode.childForFieldName('name')?.text || nameNode.text
-            : nameNode.text;
-        imports.push({
-          from: moduleName,
-          symbols: [moduleName.split('.').pop() || moduleName],
-          isDefault: false,
-          isNamespace: true,
-        });
-      }
-    }
-
-    // "from x import y, z"
-    const fromImports = findNodes(rootNode, 'import_from_statement');
-    for (const node of fromImports) {
-      const moduleNode = node.childForFieldName('module_name');
-      const moduleName = moduleNode?.text || '';
-
-      const symbols: string[] = [];
-      // Look for imported names
-      for (const child of node.namedChildren) {
-        if (child.type === 'dotted_name' && child !== moduleNode) {
-          symbols.push(child.text);
-        } else if (child.type === 'aliased_import') {
-          const name = child.childForFieldName('name');
-          symbols.push(name?.text || child.text);
-        } else if (child.type === 'wildcard_import') {
-          symbols.push('*');
-        }
-      }
-
-      if (moduleName) {
-        imports.push({
-          from: moduleName,
-          symbols,
-          isDefault: false,
-          isNamespace: symbols.includes('*'),
-        });
-      }
-    }
-
+    imports.push(...extractPlainImports(rootNode));
+    imports.push(...extractFromImports(rootNode));
     return imports;
   }
 
@@ -360,46 +396,9 @@ export class PythonParser implements ParserInterface {
   }
 
   private extractParams(funcNode: any): ParamInfo[] {
-    const params: ParamInfo[] = [];
     const paramList = funcNode.childForFieldName('parameters');
-    if (!paramList) return params;
-
-    for (const child of paramList.namedChildren) {
-      if (child.type === 'identifier') {
-        params.push({ name: child.text, type: 'unknown' });
-      } else if (child.type === 'typed_parameter') {
-        const name = child.childForFieldName('name')?.text ||
-          child.namedChildren.find((c: any) => c.type === 'identifier')?.text || 'unknown';
-        const typeNode = child.childForFieldName('type');
-        const type = truncateType(typeNode?.text || 'unknown');
-        params.push({ name, type });
-      } else if (child.type === 'default_parameter') {
-        const name = child.childForFieldName('name')?.text || 'unknown';
-        const value = child.childForFieldName('value')?.text;
-        params.push({
-          name,
-          type: 'unknown',
-          optional: true,
-          ...(value && { default: value }),
-        });
-      } else if (child.type === 'typed_default_parameter') {
-        const name = child.childForFieldName('name')?.text || 'unknown';
-        const typeNode = child.childForFieldName('type');
-        const type = truncateType(typeNode?.text || 'unknown');
-        const value = child.childForFieldName('value')?.text;
-        params.push({
-          name,
-          type,
-          optional: true,
-          ...(value && { default: value }),
-        });
-      } else if (child.type === 'list_splat_pattern' || child.type === 'dictionary_splat_pattern') {
-        const name = child.text;
-        params.push({ name, type: 'unknown' });
-      }
-    }
-
-    return params;
+    if (!paramList) return [];
+    return paramList.namedChildren.map((child: any) => parseParamNode(child)).filter(Boolean) as ParamInfo[];
   }
 
   private extractReturnType(funcNode: any, source: string): string {
