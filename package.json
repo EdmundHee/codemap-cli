@@ -1,6 +1,6 @@
 {
   "name": "@gingerdev/codemap-cli",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Static analysis CLI that generates relationship maps of codebases for AI-assisted development",
   "main": "dist/cli/index.js",
   "bin": {
