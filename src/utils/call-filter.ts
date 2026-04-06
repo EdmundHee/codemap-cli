@@ -56,6 +56,16 @@ const BUILTIN_CALLS = new Set([
   'assertLess', 'assertAlmostEqual',
   'pytest.raises', 'pytest.mark',
 
+  // Go builtins
+  'fmt.Println', 'fmt.Printf', 'fmt.Sprintf', 'fmt.Fprintf', 'fmt.Errorf',
+  'make', 'append', 'len', 'cap', 'close', 'delete', 'copy',
+  'panic', 'recover', 'new', 'println', 'print',
+
+  // Rust builtins
+  'vec', 'todo', 'unimplemented', 'dbg',
+  'assert', 'assert_eq', 'assert_ne',
+  'eprintln', 'eprint', 'write', 'writeln',
+
   // Common exception constructors
   'ValueError', 'TypeError', 'KeyError', 'IndexError', 'AttributeError',
   'RuntimeError', 'NotImplementedError', 'StopIteration', 'IOError',

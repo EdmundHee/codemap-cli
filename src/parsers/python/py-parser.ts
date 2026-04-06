@@ -1,6 +1,5 @@
 import { readFileSync } from 'fs';
 import { createHash } from 'crypto';
-import { join } from 'path';
 import { ScannedFile } from '../../core/scanner';
 import { filterCalls, truncateType } from '../../utils/call-filter';
 import {
@@ -21,33 +20,9 @@ import {
   computePyNestingDepth,
   extractPyInstanceVarAccesses,
 } from './py-metrics';
-import {
-  findNodes,
-  findDirectChildren,
-  getChildText,
-  findAllDefinition,
-} from './tree-sitter-utils';
-
-// Lazy-loaded tree-sitter
-let Parser: any = null;
-let PythonLanguage: any = null;
-
-async function initTreeSitter(): Promise<void> {
-  if (Parser) return;
-
-  const TreeSitter = require('web-tree-sitter');
-  await TreeSitter.init();
-  Parser = new TreeSitter();
-
-  const { dirname } = require('path');
-  const wasmPath = join(
-    dirname(require.resolve('tree-sitter-wasms/package.json')),
-    'out',
-    'tree-sitter-python.wasm'
-  );
-  PythonLanguage = await TreeSitter.Language.load(wasmPath);
-  Parser.setLanguage(PythonLanguage);
-}
+import { findAllDefinition } from './tree-sitter-utils';
+import { findNodes, findDirectChildren, getChildText } from '../shared/tree-sitter-utils';
+import { initLanguageParser } from '../shared/tree-sitter-base';
 
 function extractPlainImports(rootNode: any): ImportInfo[] {
   const imports: ImportInfo[] = [];
@@ -135,12 +110,12 @@ function parseParamNode(child: any): ParamInfo | null {
 
 export class PythonParser implements ParserInterface {
   async parse(file: ScannedFile): Promise<ParsedFile> {
-    await initTreeSitter();
+    const parser = await initLanguageParser('python');
 
     const content = readFileSync(file.absolute, 'utf-8');
     const hash = createHash('md5').update(content).digest('hex').slice(0, 8);
 
-    const tree = Parser.parse(content);
+    const tree = parser.parse(content);
     const rootNode = tree.rootNode;
 
     const classes = this.extractClasses(rootNode, content);

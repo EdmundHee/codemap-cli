@@ -5,6 +5,8 @@ import { ParserInterface, ParsedFile } from '../parsers/parser.interface';
 import { TypeScriptParser } from '../parsers/typescript/ts-parser';
 import { PythonParser } from '../parsers/python/py-parser';
 import { VueParser } from '../parsers/vue/vue-parser';
+import { GoParser } from '../parsers/go/go-parser';
+import { RustParser } from '../parsers/rust/rust-parser';
 import { detectFrameworks } from '../frameworks/detector';
 import { buildImportGraph } from '../analyzers/import-graph';
 import { buildCallGraph } from '../analyzers/call-graph';
@@ -34,6 +36,8 @@ export class Orchestrator {
     this.parsers.set('javascript', tsParser); // ts-morph handles JS too
     this.parsers.set('python', new PythonParser());
     this.parsers.set('vue', new VueParser(tsParser)); // delegates script blocks to TS parser
+    this.parsers.set('go', new GoParser());
+    this.parsers.set('rust', new RustParser());
   }
 
   async run(): Promise<void> {

@@ -9,11 +9,15 @@ export { FrameworkEnricher, EnrichedFrameworkData } from './enricher.interface';
 export { DjangoEnricher } from './django-enricher';
 export { FastAPIEnricher } from './fastapi-enricher';
 export { NuxtEnricher } from './nuxt-enricher';
+export { ExpressEnricher } from './express-enricher';
+export { NextjsEnricher } from './nextjs-enricher';
 
 import { FrameworkEnricher } from './enricher.interface';
 import { DjangoEnricher } from './django-enricher';
 import { FastAPIEnricher } from './fastapi-enricher';
 import { NuxtEnricher } from './nuxt-enricher';
+import { ExpressEnricher } from './express-enricher';
+import { NextjsEnricher } from './nextjs-enricher';
 
 /**
  * Get all registered framework enrichers.
@@ -24,5 +28,7 @@ export function getAllEnrichers(): FrameworkEnricher[] {
     new DjangoEnricher(),
     new FastAPIEnricher(),
     new NuxtEnricher(),
+    new ExpressEnricher(),
+    new NextjsEnricher(),
   ];
 }
