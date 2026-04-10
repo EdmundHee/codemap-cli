@@ -407,6 +407,14 @@ export function formatStructures(data: CodemapData, type: string, target?: strin
       return formatHotspotData(data, target);
     case 'dead_code':
       return formatDeadCodeData(data);
+    case 'duplicates': {
+      const { computeDuplicatesFromData } = require('../core/query-engine');
+      return formatDuplicatesData(computeDuplicatesFromData(data, target));
+    }
+    case 'circular_deps': {
+      const { computeCircularDepsFromData } = require('../core/query-engine');
+      return formatCircularDepsData(computeCircularDepsFromData(data));
+    }
     default:
       return `Unknown structure type: ${type}`;
   }
@@ -823,6 +831,136 @@ function formatNuxtComponents(components: any[]): string[] {
   lines.push('');
   return lines;
 }
+
+// --- Dependencies ---
+
+export function formatDependencies(
+  result: { file: string; imports?: string[]; imported_by?: string[] } | { file: string; imports?: string[]; imported_by?: string[] }[],
+  direction: 'imports' | 'imported_by' | 'both'
+): string {
+  const entries = Array.isArray(result) ? result : [result];
+  const lines: string[] = [];
+
+  if (entries.length > 1) {
+    lines.push(`Found ${entries.length} matching files:`, '');
+  }
+
+  for (const entry of entries) {
+    lines.push(`### \`${entry.file}\``);
+
+    if ((direction === 'imports' || direction === 'both') && entry.imports) {
+      if (entry.imports.length === 0) {
+        lines.push('**Imports:** none');
+      } else {
+        lines.push(`**Imports** (${entry.imports.length}):`);
+        for (const imp of entry.imports) {
+          lines.push(`- \`${imp}\``);
+        }
+      }
+    }
+
+    if ((direction === 'imported_by' || direction === 'both') && entry.imported_by) {
+      if (entry.imported_by.length === 0) {
+        lines.push('**Imported by:** none');
+      } else {
+        lines.push(`**Imported by** (${entry.imported_by.length}):`);
+        for (const dep of entry.imported_by) {
+          lines.push(`- \`${dep}\``);
+        }
+      }
+    }
+
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+// --- Duplicates ---
+
+export function formatDuplicatesData(
+  groups: Array<{ signature: string; functions: Array<{ name: string; file: string; params: string; calls: string[] }>; similarity: number }>
+): string {
+  const lines: string[] = ['## Duplicate Functions', ''];
+
+  if (groups.length === 0) {
+    lines.push('No duplicate functions detected.');
+    return lines.join('\n');
+  }
+
+  lines.push(`**${groups.length} duplicate group(s)** found — functions with similar names, signatures, or call patterns across different files.`, '');
+
+  for (const group of groups.slice(0, 20)) {
+    lines.push(`### \`${group.signature}\` (similarity: ${Math.round(group.similarity * 100)}%)`);
+    for (const fn of group.functions) {
+      const params = fn.params ? `(${fn.params})` : '';
+      lines.push(`- \`${fn.name}${params}\` — ${fn.file}`);
+      if (fn.calls.length > 0) {
+        lines.push(`  calls: ${fn.calls.slice(0, 8).join(', ')}${fn.calls.length > 8 ? ` (+${fn.calls.length - 8} more)` : ''}`);
+      }
+    }
+    lines.push('');
+  }
+
+  if (groups.length > 20) {
+    lines.push(`... and ${groups.length - 20} more groups`);
+  }
+
+  return lines.join('\n');
+}
+
+// --- Circular Dependencies ---
+
+export function formatCircularDepsData(
+  cycles: Array<{ files: string[]; edges: Array<{ source: string; target: string }>; minimum_cut: { source: string; target: string; weight: number } | null }>
+): string {
+  const lines: string[] = ['## Circular Dependencies', ''];
+
+  if (cycles.length === 0) {
+    lines.push('No circular dependencies detected.');
+    return lines.join('\n');
+  }
+
+  lines.push(`**${cycles.length} cycle(s)** found in the import graph.`, '');
+
+  for (const cycle of cycles) {
+    lines.push(`### Cycle (${cycle.files.length} files)`);
+    lines.push(`Files: ${cycle.files.map((f) => `\`${f}\``).join(' ↔ ')}`);
+
+    if (cycle.edges.length > 0) {
+      lines.push('Edges:');
+      for (const edge of cycle.edges) {
+        lines.push(`- \`${edge.source}\` → \`${edge.target}\``);
+      }
+    }
+
+    if (cycle.minimum_cut) {
+      lines.push(`**Suggested break:** remove import \`${cycle.minimum_cut.source}\` → \`${cycle.minimum_cut.target}\` (weight: ${cycle.minimum_cut.weight})`);
+    }
+
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+// --- Analysis Report ---
+
+export function formatAnalysisReport(
+  deadCode: string,
+  duplicates: string,
+  circularDeps: string
+): string {
+  const lines: string[] = ['# Code Analysis Report', ''];
+  lines.push(deadCode);
+  lines.push('');
+  lines.push(duplicates);
+  lines.push('');
+  lines.push(circularDeps);
+  return lines.join('\n');
+}
+
+// --- Framework data ---
 
 export function formatFrameworkData(fwData: any): string {
   const lines: string[] = [];

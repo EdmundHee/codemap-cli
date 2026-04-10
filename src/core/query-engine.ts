@@ -439,3 +439,292 @@ export function getFrameworkData(data: CodemapData, framework: string): any {
   addFrameworkExtras(result, data as any, framework);
   return result;
 }
+
+// ─── File dependency queries ─────────────────────────────────────────────
+
+/**
+ * Resolve a file path to an exact match in the import graph.
+ * Supports partial matching (e.g. "query-engine" matches "src/core/query-engine.ts").
+ */
+function resolveFilePath(data: CodemapData, filePath: string): string | string[] | null {
+  // Exact match
+  if (data.import_graph[filePath]) return filePath;
+  if (data.files[filePath]) return filePath;
+
+  // Partial match
+  const allFiles = new Set([
+    ...Object.keys(data.files),
+    ...Object.keys(data.import_graph),
+  ]);
+  const matches = [...allFiles].filter((f) => f.includes(filePath));
+
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0];
+  return matches;
+}
+
+/**
+ * Get file-level dependencies: what a file imports.
+ */
+export function getFileDependencies(
+  data: CodemapData,
+  filePath: string
+): { file: string; imports: string[] } | { file: string; imports: string[] }[] | null {
+  const resolved = resolveFilePath(data, filePath);
+  if (!resolved) return null;
+
+  if (Array.isArray(resolved)) {
+    return resolved.map((f) => ({
+      file: f,
+      imports: data.import_graph[f] || [],
+    }));
+  }
+
+  return {
+    file: resolved,
+    imports: data.import_graph[resolved] || [],
+  };
+}
+
+/**
+ * Get file-level dependents: what files import a given file.
+ */
+export function getFileDependents(
+  data: CodemapData,
+  filePath: string
+): { file: string; imported_by: string[] } | { file: string; imported_by: string[] }[] | null {
+  const resolved = resolveFilePath(data, filePath);
+  if (!resolved) return null;
+
+  function findDependents(target: string): string[] {
+    const dependents: string[] = [];
+    for (const [source, deps] of Object.entries(data.import_graph)) {
+      if (deps.includes(target)) {
+        dependents.push(source);
+      }
+    }
+    return dependents;
+  }
+
+  if (Array.isArray(resolved)) {
+    return resolved.map((f) => ({
+      file: f,
+      imported_by: findDependents(f),
+    }));
+  }
+
+  return {
+    file: resolved,
+    imported_by: findDependents(resolved),
+  };
+}
+
+// ─── Analysis from codemap data ──────────────────────────────────────────
+
+export interface DuplicateGroupData {
+  signature: string;
+  functions: Array<{ name: string; file: string; params: string; calls: string[] }>;
+  similarity: number;
+}
+
+/**
+ * Compute Jaccard similarity between two string arrays.
+ */
+function jaccardSimilarity(a: string[], b: string[]): number {
+  if (a.length === 0 && b.length === 0) return 1;
+  const setA = new Set(a);
+  const setB = new Set(b);
+  let intersection = 0;
+  for (const item of setA) {
+    if (setB.has(item)) intersection++;
+  }
+  const union = setA.size + setB.size - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+/**
+ * Detect duplicate functions from pre-built codemap data.
+ * Same algorithm as src/analyzers/duplicates.ts but operates on CodemapData
+ * instead of ParsedFile[].
+ */
+export function computeDuplicatesFromData(data: CodemapData, scope?: string): DuplicateGroupData[] {
+  const allFunctions: Array<{ name: string; file: string; paramSignature: string; calls: string[] }> = [];
+
+  // Collect standalone functions
+  for (const [name, func] of Object.entries(data.functions) as [string, any][]) {
+    if (scope && !func.file?.startsWith(scope)) continue;
+    allFunctions.push({
+      name,
+      file: func.file,
+      paramSignature: (func.params || []).map((p: any) => `${p.name}:${p.type}`).join(','),
+      calls: func.calls || [],
+    });
+  }
+
+  // Collect class methods
+  for (const [clsName, cls] of Object.entries(data.classes) as [string, any][]) {
+    if (scope && !cls.file?.startsWith(scope)) continue;
+    for (const method of cls.methods || []) {
+      allFunctions.push({
+        name: `${clsName}.${method.name}`,
+        file: cls.file,
+        paramSignature: (method.params || []).map((p: any) => `${p.name}:${p.type}`).join(','),
+        calls: method.calls || [],
+      });
+    }
+  }
+
+  // Group by base name
+  const nameGroups = new Map<string, typeof allFunctions>();
+  for (const func of allFunctions) {
+    const baseName = func.name.includes('.') ? func.name.split('.').pop()! : func.name;
+    if (!nameGroups.has(baseName)) nameGroups.set(baseName, []);
+    nameGroups.get(baseName)!.push(func);
+  }
+
+  const duplicates: DuplicateGroupData[] = [];
+
+  for (const [name, funcs] of nameGroups) {
+    if (funcs.length <= 1) continue;
+    const uniqueFiles = new Set(funcs.map((f) => f.file));
+    if (uniqueFiles.size <= 1) continue;
+
+    let maxSimilarity = 0;
+    for (let i = 0; i < funcs.length; i++) {
+      for (let j = i + 1; j < funcs.length; j++) {
+        const sim = jaccardSimilarity(funcs[i].calls, funcs[j].calls);
+        if (sim > maxSimilarity) maxSimilarity = sim;
+      }
+    }
+
+    const sigMatch = funcs.some((a, i) =>
+      funcs.some((b, j) => i !== j && a.paramSignature === b.paramSignature && a.paramSignature !== '')
+    );
+
+    if (maxSimilarity > 0.3 || sigMatch) {
+      duplicates.push({
+        signature: name,
+        functions: funcs.map((f) => ({
+          name: f.name,
+          file: f.file,
+          params: f.paramSignature,
+          calls: f.calls,
+        })),
+        similarity: Math.round(maxSimilarity * 100) / 100,
+      });
+    }
+  }
+
+  duplicates.sort((a, b) => b.similarity - a.similarity);
+  return duplicates;
+}
+
+export interface CircularDepData {
+  files: string[];
+  edges: Array<{ source: string; target: string }>;
+  minimum_cut: { source: string; target: string; weight: number } | null;
+}
+
+/**
+ * Detect circular dependencies from import_graph using Tarjan's SCC.
+ * Operates directly on CodemapData without needing ParsedFile[].
+ */
+export function computeCircularDepsFromData(data: CodemapData): CircularDepData[] {
+  const graph = new Map<string, string[]>();
+
+  // Build graph from import_graph
+  for (const [file, imports] of Object.entries(data.import_graph)) {
+    graph.set(file, imports);
+  }
+  // Ensure all imported files are nodes too
+  for (const imports of Object.values(data.import_graph)) {
+    for (const imp of imports) {
+      if (!graph.has(imp)) graph.set(imp, []);
+    }
+  }
+
+  // Tarjan's SCC
+  let index = 0;
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  const indices = new Map<string, number>();
+  const lowLinks = new Map<string, number>();
+  const sccs: string[][] = [];
+
+  function strongConnect(v: string) {
+    indices.set(v, index);
+    lowLinks.set(v, index);
+    index++;
+    stack.push(v);
+    onStack.add(v);
+
+    const neighbors = graph.get(v) || [];
+    for (const w of neighbors) {
+      if (!indices.has(w)) {
+        strongConnect(w);
+        lowLinks.set(v, Math.min(lowLinks.get(v)!, lowLinks.get(w)!));
+      } else if (onStack.has(w)) {
+        lowLinks.set(v, Math.min(lowLinks.get(v)!, indices.get(w)!));
+      }
+    }
+
+    if (lowLinks.get(v) === indices.get(v)) {
+      const component: string[] = [];
+      let w: string;
+      do {
+        w = stack.pop()!;
+        onStack.delete(w);
+        component.push(w);
+      } while (w !== v);
+      sccs.push(component);
+    }
+  }
+
+  for (const v of graph.keys()) {
+    if (!indices.has(v)) strongConnect(v);
+  }
+
+  // Filter to cycles (SCCs with >1 node)
+  const cycles: CircularDepData[] = [];
+  for (const scc of sccs) {
+    if (scc.length <= 1) continue;
+
+    const fileSet = new Set(scc);
+    const edges: Array<{ source: string; target: string }> = [];
+
+    for (const file of scc) {
+      const imports = graph.get(file) || [];
+      for (const imp of imports) {
+        if (fileSet.has(imp) && imp !== file) {
+          edges.push({ source: file, target: imp });
+        }
+      }
+    }
+
+    // Find minimum cut (edge with fewest connections)
+    let minimumCut: { source: string; target: string; weight: number } | null = null;
+    const edgeWeights = new Map<string, number>();
+    for (const edge of edges) {
+      const key = `${edge.source}→${edge.target}`;
+      edgeWeights.set(key, (edgeWeights.get(key) || 0) + 1);
+    }
+
+    let minWeight = Infinity;
+    for (const edge of edges) {
+      const key = `${edge.source}→${edge.target}`;
+      const weight = edgeWeights.get(key) || 1;
+      if (weight < minWeight) {
+        minWeight = weight;
+        minimumCut = { source: edge.source, target: edge.target, weight };
+      }
+    }
+
+    cycles.push({
+      files: scc.sort(),
+      edges,
+      minimum_cut: minimumCut,
+    });
+  }
+
+  return cycles;
+}

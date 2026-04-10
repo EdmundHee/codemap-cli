@@ -37,6 +37,10 @@ import {
   getModels,
   getMiddleware,
   getFrameworkData,
+  getFileDependencies,
+  getFileDependents,
+  computeDuplicatesFromData,
+  computeCircularDepsFromData,
   QueryResult,
 } from '../core/query-engine';
 import {
@@ -51,6 +55,10 @@ import {
   formatStructures,
   formatHealthDiff,
   formatFrameworkData,
+  formatDependencies,
+  formatDuplicatesData,
+  formatCircularDepsData,
+  formatAnalysisReport,
 } from './formatters';
 import { computeTrend } from '../analyzers/history';
 import { UsageTracker, computeResponseBytes } from './usage-tracker';
@@ -354,6 +362,59 @@ function registerSearchTools(
       return mdResult(formatCalls(getCalls(resolved.data, name)));
     })
   );
+
+  server.tool(
+    'codemap_dependencies',
+    'Trace file-level dependencies: what a file imports and what imports it. '
+    + 'Use to understand module boundaries, plan refactoring, check if a file can be safely '
+    + 'moved or deleted, or trace how a change propagates through the import graph. '
+    + 'Supports partial file path matching. Answers: "what does this file depend on?", '
+    + '"what will break if I move this file?", "how coupled is this file to the rest of the project?".',
+    {
+      file: z.string().describe('File path or partial path (e.g. "query-engine.ts", "src/core/config.ts")'),
+      direction: z.enum(['imports', 'imported_by', 'both']).optional()
+        .describe('Which direction to trace: "imports" (what this file uses), "imported_by" (what uses this file), or "both" (default)'),
+      project: projectParam,
+    },
+    tracked('codemap_dependencies', async ({ file, direction, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const dir = direction || 'both';
+
+      if (dir === 'imports' || dir === 'both') {
+        const deps = getFileDependencies(resolved.data, file);
+        if (!deps) return errorResult(`File "${file}" not found in the import graph.`);
+
+        if (dir === 'imports') {
+          return mdResult(formatDependencies(
+            Array.isArray(deps) ? deps : [deps],
+            'imports'
+          ));
+        }
+
+        // both — need imported_by too
+        const dependents = getFileDependents(resolved.data, file);
+        const depsArr = Array.isArray(deps) ? deps : [deps];
+        const depArr = dependents ? (Array.isArray(dependents) ? dependents : [dependents]) : [];
+
+        // Merge imports and imported_by for each file
+        const merged = depsArr.map((d) => {
+          const match = depArr.find((r) => r.file === d.file);
+          return { ...d, imported_by: match?.imported_by || [] };
+        });
+
+        return mdResult(formatDependencies(merged, 'both'));
+      }
+
+      // imported_by only
+      const dependents = getFileDependents(resolved.data, file);
+      if (!dependents) return errorResult(`File "${file}" not found in the import graph.`);
+      return mdResult(formatDependencies(
+        Array.isArray(dependents) ? dependents : [dependents],
+        'imported_by'
+      ));
+    })
+  );
 }
 
 function registerHealthTools(
@@ -404,14 +465,17 @@ function registerHealthTools(
 
   server.tool(
     'codemap_structures',
-    'Get raw structural analysis data for refactoring decisions. Three analysis types: '
+    'Get raw structural analysis data for refactoring decisions. Five analysis types: '
     + '"cohesion" — LCOM4 clusters showing which methods/fields group together (use to decide '
     + 'how to split a god class); "hotspots" — most complex functions ranked by cyclomatic '
     + 'complexity with their callees (use to find what to simplify); "dead_code" — unreachable '
-    + 'functions that are never called (use to find safe deletion candidates). Returns computed '
-    + 'data, not opinions — you decide what to act on.',
+    + 'functions that are never called (use to find safe deletion candidates); '
+    + '"duplicates" — functions with similar names and call patterns across different files '
+    + '(use to find DRY violations and consolidation opportunities); '
+    + '"circular_deps" — import cycles detected via Tarjan SCC with minimum-cut suggestions '
+    + '(use to find and break circular dependencies). Returns computed data, not opinions — you decide what to act on.',
     {
-      type: z.enum(['cohesion', 'hotspots', 'dead_code']).describe('Analysis type'),
+      type: z.enum(['cohesion', 'hotspots', 'dead_code', 'duplicates', 'circular_deps']).describe('Analysis type'),
       target: z.string().optional().describe('Optional: specific class or function name to focus on'),
       project: projectParam,
     },
@@ -420,6 +484,43 @@ function registerHealthTools(
       if ('error' in resolved) return errorResult(resolved.error);
       const { data } = resolved;
       return mdResult(formatStructures(data, type, target));
+    })
+  );
+
+  server.tool(
+    'codemap_analyze',
+    'Run comprehensive code analysis: dead code, duplicate functions, and circular dependencies '
+    + 'in a single call. Use AFTER writing or modifying code to verify you haven\'t introduced '
+    + 'duplicates, dead code, or circular imports. Also use before refactoring to identify '
+    + 'cleanup opportunities. Returns all issues with actionable recommendations — consolidate '
+    + 'duplicates, delete dead code, break cycles. This is the primary tool for keeping code DRY '
+    + 'and preventing spaghetti dependencies.',
+    {
+      checks: z.array(z.enum(['dead_code', 'duplicates', 'circular_deps']))
+        .optional()
+        .describe('Which checks to run. Default: all three. Use ["duplicates"] to focus on DRY violations only.'),
+      scope: z.string().optional()
+        .describe('Optional module/directory path to scope the analysis (e.g. "src/core", "backend/api")'),
+      project: projectParam,
+    },
+    tracked('codemap_analyze', async ({ checks, scope, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const { data } = resolved;
+
+      const runChecks = checks || ['dead_code', 'duplicates', 'circular_deps'];
+
+      const deadCodeSection = runChecks.includes('dead_code')
+        ? formatStructures(data, 'dead_code')
+        : '';
+      const duplicatesSection = runChecks.includes('duplicates')
+        ? formatDuplicatesData(computeDuplicatesFromData(data, scope))
+        : '';
+      const circularDepsSection = runChecks.includes('circular_deps')
+        ? formatCircularDepsData(computeCircularDepsFromData(data))
+        : '';
+
+      return mdResult(formatAnalysisReport(deadCodeSection, duplicatesSection, circularDepsSection));
     })
   );
 }
