@@ -12,6 +12,7 @@ Steps:
 3. For relevant matches, call `codemap_callers` and `codemap_calls` to understand how they fit into the architecture
 4. Call `codemap_module` on the directories where changes will likely be needed
 5. Call `codemap_health` to identify any existing quality issues in affected areas
+6. Call `codemap_analyze` scoped to affected modules to flag duplicates, dead code, or circular deps you should address
 
 Then produce a plan:
 - **Existing code**: what already exists that's relevant (reuse opportunities)
@@ -20,3 +21,4 @@ Then produce a plan:
 - **Dependencies**: what existing code will be affected and how
 - **Testing strategy**: what to test based on the call graph (which callers to verify)
 - **Risk areas**: modules with high complexity or coupling that need extra care
+- **Cleanup opportunities**: any dead code to remove or duplicates to consolidate while you're in the area

@@ -9,25 +9,54 @@ const CLAUDE_MD_SECTION_START = '<!-- codemap:start -->';
 const CLAUDE_MD_SECTION_END = '<!-- codemap:end -->';
 
 const CLAUDE_MD_CONTENT = `${CLAUDE_MD_SECTION_START}
-## Codemap
+## Codemap — MANDATORY USAGE RULES
 
 This project has a **codemap MCP server** with pre-indexed code structure, call graphs, and relationships.
-Always prefer \`codemap_*\` tools over grep/read for finding functions, understanding call relationships,
-impact analysis, and code exploration — they return structured context in a single call.
+The following rules are **NOT optional** — follow them for every task.
 
-**Workflows** (use these for multi-step tasks):
+### Before Writing New Code
+- ALWAYS call \`codemap_query\` to search for existing functions that do something similar
+- ALWAYS call \`codemap_module\` on the target directory to understand what's already there
+- If you find similar functions, reuse or extend them — do NOT create duplicates
+- For larger features, use \`/codemap-find-reusable\` to systematically search for reuse opportunities
 
+### Before Modifying Existing Code
+- ALWAYS call \`codemap_callers\` on any function you plan to change — know the blast radius
+- ALWAYS call \`codemap_calls\` to understand what the function depends on
+- If there are >5 callers, explain the impact before proceeding
+- Use \`codemap_dependencies\` to trace file-level imports/dependents
+
+### Before Planning
+- Call \`codemap_overview\` to orient yourself in the project structure
+- Call \`codemap_module\` on directories relevant to the task
+- Call \`codemap_query\` to find existing code related to the feature
+- Use \`/codemap-plan\` for complex multi-step implementations
+
+### After Code Generation (completing a task)
+- Call \`codemap_health\` to verify the health score didn't degrade
+- Call \`codemap_analyze\` to check for introduced duplicates or dead code
+- If health score dropped, explain what caused the regression
+- Run \`/codemap-refresh\` to keep the codemap in sync with your changes
+
+### Tool Priority
+Use \`codemap_*\` tools **INSTEAD OF** grep/Glob/Read for:
+- Finding function/class definitions → \`codemap_query\`
+- Understanding what calls what → \`codemap_callers\` / \`codemap_calls\`
+- Exploring project structure → \`codemap_overview\` / \`codemap_module\`
+- Checking code quality → \`codemap_health\` / \`codemap_analyze\`
+- Checking file dependencies → \`codemap_dependencies\`
+- Finding DRY violations → \`codemap_structures\` with type "duplicates"
+- Finding circular imports → \`codemap_structures\` with type "circular_deps"
+
+### Workflows (for multi-step tasks)
 - \`/codemap-explore\` — understand the project structure and architecture
 - \`/codemap-find-reusable\` — search for existing code to reuse before writing new functions
 - \`/codemap-impact\` — analyze blast radius before refactoring or modifying code
 - \`/codemap-plan\` — create an implementation plan grounded in actual code structure
+- \`/codemap-analyze\` — run full analysis: dead code, duplicates, circular deps
 - \`/codemap-health-review\` — review code quality and identify what to refactor next
 - \`/codemap-refresh\` — regenerate codemap when source files have changed
 - \`/codemap-usage\` — view MCP tool usage statistics with 5-hour interval breakdown
-
-**Auto-refresh**: After completing a code generation or significant code changes,
-run \`/codemap-refresh\` to keep the codemap in sync. This ensures call graphs,
-health scores, and all query results reflect the latest code.
 ${CLAUDE_MD_SECTION_END}`;
 
 // --- Claude Code command templates ---
@@ -65,6 +94,7 @@ Steps:
 3. For promising matches, call \`codemap_calls\` to understand their internal dependencies
 4. For promising matches, call \`codemap_callers\` to see how widely they're already used (more callers = more mature/tested)
 5. Check \`codemap_module\` on the directories where matches live to see if there are related utilities nearby
+6. Call \`codemap_analyze\` with checks=["duplicates"] to find functions with similar call patterns — these are strong reuse candidates even if names don't match
 
 Then provide a recommendation for each match:
 - **Reuse as-is**: function already does what's needed, just import and call it
@@ -113,6 +143,7 @@ Steps:
 3. For relevant matches, call \`codemap_callers\` and \`codemap_calls\` to understand how they fit into the architecture
 4. Call \`codemap_module\` on the directories where changes will likely be needed
 5. Call \`codemap_health\` to identify any existing quality issues in affected areas
+6. Call \`codemap_analyze\` scoped to affected modules to flag duplicates, dead code, or circular deps you should address
 
 Then produce a plan:
 - **Existing code**: what already exists that's relevant (reuse opportunities)
@@ -121,6 +152,26 @@ Then produce a plan:
 - **Dependencies**: what existing code will be affected and how
 - **Testing strategy**: what to test based on the call graph (which callers to verify)
 - **Risk areas**: modules with high complexity or coupling that need extra care
+- **Cleanup opportunities**: any dead code to remove or duplicates to consolidate while you're in the area
+`,
+
+  'codemap-analyze.md': `---
+description: Run full code analysis — dead code, duplicates, circular deps — and get recommendations
+---
+
+Run a comprehensive code analysis and produce actionable recommendations.
+
+Steps:
+1. Call \`codemap_analyze\` to get dead code, duplicate functions, and circular dependencies
+2. Call \`codemap_health\` to get the current health score and hotspots
+3. If a scope was specified ($ARGUMENTS), call \`codemap_analyze\` with scope set to that module/area
+
+Present results as a prioritized action list:
+- **Duplicates to consolidate**: functions that do the same thing in different files — merge them
+- **Dead code to delete**: unreachable functions safe to remove immediately
+- **Circular deps to break**: import cycles with minimum-cut suggestions
+- **Complexity hotspots**: functions to simplify or split
+- **Overall health**: score, trend, and top improvement opportunities
 `,
 
   'codemap-health-review.md': `---
@@ -141,6 +192,25 @@ Produce a prioritized action list:
 - **High impact**: complex hotspots with many callers (simplifying these improves the most code paths)
 - **Structural**: god classes or high-coupling modules that need architectural attention
 - **Overall assessment**: health score interpretation and trend direction
+`,
+
+  'codemap-analyze.md': `---
+description: Run full code analysis — dead code, duplicates, circular deps — and get recommendations
+---
+
+Run a comprehensive code analysis and produce actionable recommendations.
+
+Steps:
+1. Call \`codemap_analyze\` to get dead code, duplicate functions, and circular dependencies
+2. Call \`codemap_health\` to get the current health score and hotspots
+3. If a scope was specified ($ARGUMENTS), call \`codemap_analyze\` with scope set to that module/area
+
+Present results as a prioritized action list:
+- **Duplicates to consolidate**: functions that do the same thing in different files — merge them
+- **Dead code to delete**: unreachable functions safe to remove immediately
+- **Circular deps to break**: import cycles with minimum-cut suggestions
+- **Complexity hotspots**: functions to simplify or split
+- **Overall health**: score, trend, and top improvement opportunities
 `,
 
   'codemap-refresh.md': `---

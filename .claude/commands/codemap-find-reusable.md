@@ -12,6 +12,7 @@ Steps:
 3. For promising matches, call `codemap_calls` to understand their internal dependencies
 4. For promising matches, call `codemap_callers` to see how widely they're already used (more callers = more mature/tested)
 5. Check `codemap_module` on the directories where matches live to see if there are related utilities nearby
+6. Call `codemap_analyze` with checks=["duplicates"] to find functions with similar call patterns — these are strong reuse candidates even if names don't match
 
 Then provide a recommendation for each match:
 - **Reuse as-is**: function already does what's needed, just import and call it

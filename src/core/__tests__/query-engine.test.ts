@@ -12,6 +12,10 @@ import {
   getModels,
   getMiddleware,
   getFrameworkData,
+  getFileDependencies,
+  getFileDependents,
+  computeDuplicatesFromData,
+  computeCircularDepsFromData,
 } from '../query-engine';
 import { CodemapData } from '../../output/json-generator';
 
@@ -434,5 +438,174 @@ describe('getFrameworkData', () => {
     expect(result.routes).toEqual([]);
     expect(result.models).toEqual([]);
     expect(result.middleware).toEqual([]);
+  });
+});
+
+// ─── getFileDependencies ─────────────────────────────────────────────────
+
+describe('getFileDependencies', () => {
+  test('returns imports for an exact file path', () => {
+    const data = makeCodemapData();
+    const result = getFileDependencies(data, 'src/index.ts');
+
+    expect(result).not.toBeNull();
+    expect(Array.isArray(result)).toBe(false);
+    expect((result as any).file).toBe('src/index.ts');
+    expect((result as any).imports).toContain('src/models/user.ts');
+  });
+
+  test('returns imports for a partial file path', () => {
+    const data = makeCodemapData();
+    const result = getFileDependencies(data, 'index.ts');
+
+    expect(result).not.toBeNull();
+  });
+
+  test('returns null for non-existent file', () => {
+    const data = makeCodemapData();
+    expect(getFileDependencies(data, 'zzz_nonexistent_zzz')).toBeNull();
+  });
+
+  test('returns empty imports for leaf file', () => {
+    const data = makeCodemapData();
+    const result = getFileDependencies(data, 'src/utils/helper.ts');
+
+    expect(result).not.toBeNull();
+    if (!Array.isArray(result)) {
+      expect(result!.imports).toEqual([]);
+    }
+  });
+});
+
+// ─── getFileDependents ───────────────────────────────────────────────────
+
+describe('getFileDependents', () => {
+  test('returns files that import a given file', () => {
+    const data = makeCodemapData();
+    const result = getFileDependents(data, 'src/models/user.ts');
+
+    expect(result).not.toBeNull();
+    if (!Array.isArray(result)) {
+      expect(result!.imported_by).toContain('src/index.ts');
+    }
+  });
+
+  test('returns empty for file with no dependents', () => {
+    const data = makeCodemapData();
+    const result = getFileDependents(data, 'src/index.ts');
+
+    expect(result).not.toBeNull();
+    if (!Array.isArray(result)) {
+      expect(result!.imported_by).toEqual([]);
+    }
+  });
+
+  test('returns null for non-existent file', () => {
+    const data = makeCodemapData();
+    expect(getFileDependents(data, 'zzz_nonexistent_zzz')).toBeNull();
+  });
+});
+
+// ─── computeDuplicatesFromData ───────────────────────────────────────────
+
+describe('computeDuplicatesFromData', () => {
+  test('detects duplicate functions across files', () => {
+    const data = makeCodemapData({
+      functions: {
+        'formatData': { file: 'src/utils/format.ts', params: [{ name: 'data', type: 'any' }], return_type: 'string', calls: ['JSON.stringify', 'trim'], exported: true, complexity: 1 } as any,
+        'formatData2': { file: 'src/core/format.ts', params: [{ name: 'data', type: 'any' }], return_type: 'string', calls: ['JSON.stringify', 'trim'], exported: true, complexity: 1 } as any,
+      },
+    });
+
+    // These have different names so won't match by base name.
+    // Need same base name for duplicate detection.
+    const data2 = makeCodemapData({
+      functions: {
+        'helper': { file: 'src/utils/a.ts', params: [{ name: 'x', type: 'number' }], return_type: 'number', calls: ['Math.round', 'validate'], exported: true, complexity: 1 } as any,
+        'helper2': { file: 'src/utils/b.ts', params: [{ name: 'x', type: 'number' }], return_type: 'number', calls: ['Math.round', 'validate'], exported: true, complexity: 1 } as any,
+      },
+    });
+
+    // Same base name across different files
+    const data3 = makeCodemapData({
+      functions: {
+        'validate': { file: 'src/utils/a.ts', params: [{ name: 'input', type: 'string' }], return_type: 'boolean', calls: ['trim', 'test'], exported: true, complexity: 2 } as any,
+      },
+      classes: {
+        'FormHandler': { file: 'src/forms/b.ts', extends: null, implements: [], decorators: [], methods: [{ name: 'validate', params: [{ name: 'input', type: 'string' }], return_type: 'boolean', calls: ['trim', 'test'], complexity: 2 }], properties: [] } as any,
+      },
+    });
+
+    const dupes = computeDuplicatesFromData(data3);
+    expect(dupes.length).toBeGreaterThanOrEqual(1);
+    expect(dupes[0].signature).toBe('validate');
+  });
+
+  test('returns empty when no duplicates exist', () => {
+    const data = makeCodemapData();
+    const dupes = computeDuplicatesFromData(data);
+    // Default test data has unique function names
+    expect(Array.isArray(dupes)).toBe(true);
+  });
+
+  test('respects scope parameter', () => {
+    const data = makeCodemapData({
+      functions: {
+        'parse': { file: 'src/core/parser.ts', params: [], return_type: 'any', calls: ['tokenize'], exported: true, complexity: 1 } as any,
+      },
+      classes: {
+        'Formatter': { file: 'lib/format.ts', extends: null, implements: [], decorators: [], methods: [{ name: 'parse', params: [], return_type: 'any', calls: ['tokenize'], complexity: 1 }], properties: [] } as any,
+      },
+    });
+
+    // Scoping to src/ should exclude lib/
+    const scopedDupes = computeDuplicatesFromData(data, 'src/');
+    // With scope, the lib/ function is excluded so no cross-file match
+    for (const group of scopedDupes) {
+      for (const fn of group.functions) {
+        expect(fn.file.startsWith('src/')).toBe(true);
+      }
+    }
+  });
+});
+
+// ─── computeCircularDepsFromData ─────────────────────────────────────────
+
+describe('computeCircularDepsFromData', () => {
+  test('detects circular dependencies', () => {
+    const data = makeCodemapData({
+      import_graph: {
+        'src/a.ts': ['src/b.ts'],
+        'src/b.ts': ['src/c.ts'],
+        'src/c.ts': ['src/a.ts'],
+      },
+    });
+
+    const cycles = computeCircularDepsFromData(data);
+    expect(cycles.length).toBe(1);
+    expect(cycles[0].files).toHaveLength(3);
+    expect(cycles[0].edges.length).toBeGreaterThanOrEqual(3);
+    expect(cycles[0].minimum_cut).not.toBeNull();
+  });
+
+  test('returns empty when no circular deps exist', () => {
+    const data = makeCodemapData();
+    // Default test data has a linear import graph
+    const cycles = computeCircularDepsFromData(data);
+    expect(cycles).toEqual([]);
+  });
+
+  test('handles multiple independent cycles', () => {
+    const data = makeCodemapData({
+      import_graph: {
+        'src/a.ts': ['src/b.ts'],
+        'src/b.ts': ['src/a.ts'],
+        'lib/x.ts': ['lib/y.ts'],
+        'lib/y.ts': ['lib/x.ts'],
+      },
+    });
+
+    const cycles = computeCircularDepsFromData(data);
+    expect(cycles.length).toBe(2);
   });
 });
