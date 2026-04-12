@@ -13,6 +13,7 @@ The following rules are **NOT optional** — follow them for every task.
 ### Before Modifying Existing Code
 - ALWAYS call `codemap_callers` on any function you plan to change — know the blast radius
 - ALWAYS call `codemap_calls` to understand what the function depends on
+- Or use `codemap_explore` to see the full call-graph neighborhood in one call (callers + callees at configurable depth)
 - If there are >5 callers, explain the impact before proceeding
 - Use `codemap_dependencies` to trace file-level imports/dependents
 
@@ -30,8 +31,9 @@ The following rules are **NOT optional** — follow them for every task.
 
 ### Tool Priority
 Use `codemap_*` tools **INSTEAD OF** grep/Glob/Read for:
-- Finding function/class definitions → `codemap_query`
+- Finding function/class definitions → `codemap_query` (returns clustered results — hubs first, helpers folded)
 - Understanding what calls what → `codemap_callers` / `codemap_calls`
+- Exploring call-graph neighborhood → `codemap_explore` (BFS traversal: callers + callees in one call)
 - Exploring project structure → `codemap_overview` / `codemap_module`
 - Checking code quality → `codemap_health` / `codemap_analyze`
 - Checking file dependencies → `codemap_dependencies`
