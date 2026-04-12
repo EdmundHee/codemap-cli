@@ -4,6 +4,7 @@
  */
 
 import { CodemapData } from '../output/json-generator';
+import { clusterSearchResults, ClusteredSearchResult } from '../analyzers/cluster';
 
 export interface QueryResult {
   type: 'function' | 'class' | 'method' | 'file' | 'module' | 'type' | 'summary';
@@ -221,6 +222,117 @@ export function search(data: CodemapData, term: string): QueryResult[] {
   }
 
   return results;
+}
+
+/**
+ * Clustered search: groups matching results by call-graph relationships.
+ *
+ * Instead of returning a flat list of 20 matches, identifies the "hub"
+ * functions (tree roots) and folds child helpers under them. The LLM gets
+ * the big picture with fewer tokens and can drill deeper if needed.
+ *
+ * Example: searching "parse" might return 3 hubs instead of 20 flat matches:
+ *   parseConfig (hub, 5 related) — parseYaml, parseEnv, validateConfig, ...
+ *   parseToken (hub, 3 related) — decodeJWT, validateSignature, ...
+ *   parseDate (standalone)
+ */
+export function searchClustered(data: CodemapData, term: string): ClusteredSearchResult[] {
+  const results = search(data, term);
+  if (results.length <= 3) {
+    // Few results: no need to cluster, return as single-item clusters
+    return results.map((r) => ({
+      hub: { name: r.name, type: r.type as any, file: r.file },
+      children: [],
+      size: 1,
+    }));
+  }
+  return clusterSearchResults(results, data.call_graph);
+}
+
+/**
+ * BFS/DFS traversal from a function through the call graph.
+ * Returns the neighborhood of a function: what it calls, what calls it,
+ * up to a configurable depth. Inspired by graphify's query_graph.
+ */
+export function exploreFunction(
+  data: CodemapData,
+  name: string,
+  options: { depth?: number; direction?: 'calls' | 'callers' | 'both' } = {}
+): {
+  root: string;
+  nodes: Array<{ name: string; file?: string; depth: number; relation: 'calls' | 'called_by' | 'root' }>;
+  edges: Array<{ from: string; to: string }>;
+} | null {
+  const depth = Math.min(options.depth || 2, 5);
+  const direction = options.direction || 'both';
+
+  // Verify the function exists in the call graph
+  const hasKey = data.call_graph[name] !== undefined;
+  const hasCaller = Object.values(data.call_graph).some((callees) => callees.includes(name));
+  if (!hasKey && !hasCaller) return null;
+
+  const visited = new Set<string>();
+  const nodes: Array<{ name: string; file?: string; depth: number; relation: 'calls' | 'called_by' | 'root' }> = [];
+  const edges: Array<{ from: string; to: string }> = [];
+
+  // Resolve file for a function name
+  function getFile(fn: string): string | undefined {
+    const func = data.functions[fn];
+    if (func) return func.file;
+    const dotIdx = fn.indexOf('.');
+    if (dotIdx > 0) {
+      const clsName = fn.substring(0, dotIdx);
+      const cls = data.classes[clsName];
+      if (cls) return cls.file;
+    }
+    return undefined;
+  }
+
+  // Add root
+  visited.add(name);
+  nodes.push({ name, file: getFile(name), depth: 0, relation: 'root' });
+
+  // BFS forward (calls)
+  if (direction === 'calls' || direction === 'both') {
+    let frontier = new Set<string>([name]);
+    for (let d = 1; d <= depth; d++) {
+      const nextFrontier = new Set<string>();
+      for (const fn of frontier) {
+        const callees = data.call_graph[fn] || [];
+        for (const callee of callees) {
+          if (visited.has(callee)) continue;
+          visited.add(callee);
+          nodes.push({ name: callee, file: getFile(callee), depth: d, relation: 'calls' });
+          edges.push({ from: fn, to: callee });
+          nextFrontier.add(callee);
+        }
+      }
+      frontier = nextFrontier;
+      if (frontier.size === 0) break;
+    }
+  }
+
+  // BFS backward (callers)
+  if (direction === 'callers' || direction === 'both') {
+    let frontier = new Set<string>([name]);
+    for (let d = 1; d <= depth; d++) {
+      const nextFrontier = new Set<string>();
+      for (const fn of frontier) {
+        for (const [caller, callees] of Object.entries(data.call_graph)) {
+          if (callees.includes(fn) && !visited.has(caller)) {
+            visited.add(caller);
+            nodes.push({ name: caller, file: getFile(caller), depth: d, relation: 'called_by' });
+            edges.push({ from: caller, to: fn });
+            nextFrontier.add(caller);
+          }
+        }
+      }
+      frontier = nextFrontier;
+      if (frontier.size === 0) break;
+    }
+  }
+
+  return { root: name, nodes, edges };
 }
 
 /**

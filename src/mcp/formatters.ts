@@ -8,6 +8,7 @@ import { CodemapData, HealthData } from '../output/json-generator';
 import { ModuleMetrics } from '../analyzers/coupling';
 import { QueryResult } from '../core/query-engine';
 import { HealthTrend } from '../analyzers/history';
+import { ClusteredSearchResult } from '../analyzers/cluster';
 
 // --- Overview ---
 
@@ -272,6 +273,105 @@ function formatSingleResult(result: QueryResult): string {
       return lines.join('\n');
     }
   }
+}
+
+// --- Clustered Search Results ---
+
+export function formatClusteredResults(clusters: ClusteredSearchResult[]): string {
+  if (clusters.length === 0) return 'No results found.';
+
+  const totalItems = clusters.reduce((sum, c) => sum + c.size, 0);
+  const lines: string[] = [
+    `Found ${totalItems} result(s) in ${clusters.length} cluster(s):`,
+    '',
+  ];
+
+  for (const cluster of clusters) {
+    const hub = cluster.hub;
+    const loc = hub.file ? ` — ${hub.file}` : '';
+
+    if (cluster.children.length === 0) {
+      // Standalone result (no children)
+      lines.push(`- **${hub.type}** \`${hub.name}\`${loc}`);
+    } else {
+      // Hub with children — show hub prominently, children compactly
+      lines.push(`- **${hub.type}** \`${hub.name}\`${loc} *(hub, ${cluster.size} related)*`);
+      for (const child of cluster.children) {
+        const childLoc = child.file ? ` — ${child.file}` : '';
+        lines.push(`  - ${child.type} \`${child.name}\`${childLoc}`);
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// --- Explore (call-graph traversal) ---
+
+export function formatExplore(result: {
+  root: string;
+  nodes: Array<{ name: string; file?: string; depth: number; relation: 'calls' | 'called_by' | 'root' }>;
+  edges: Array<{ from: string; to: string }>;
+}): string {
+  const lines: string[] = [];
+
+  const callsNodes = result.nodes.filter((n) => n.relation === 'calls');
+  const callerNodes = result.nodes.filter((n) => n.relation === 'called_by');
+
+  lines.push(`## Call graph around \`${result.root}\``);
+  lines.push(`${result.nodes.length} nodes, ${result.edges.length} edges`);
+  lines.push('');
+
+  // Group by depth for readable output
+  if (callerNodes.length > 0) {
+    lines.push('### Called by (upstream)');
+    const byDepth = new Map<number, typeof callerNodes>();
+    for (const n of callerNodes) {
+      if (!byDepth.has(n.depth)) byDepth.set(n.depth, []);
+      byDepth.get(n.depth)!.push(n);
+    }
+    for (const [depth, nodes] of [...byDepth.entries()].sort((a, b) => a[0] - b[0])) {
+      for (const n of nodes) {
+        const indent = '  '.repeat(depth - 1);
+        const loc = n.file ? ` — ${n.file}` : '';
+        lines.push(`${indent}- \`${n.name}\`${loc}`);
+      }
+    }
+    lines.push('');
+  }
+
+  // Root
+  const rootNode = result.nodes.find((n) => n.relation === 'root');
+  if (rootNode) {
+    const loc = rootNode.file ? ` — ${rootNode.file}` : '';
+    lines.push(`**Root:** \`${rootNode.name}\`${loc}`);
+    lines.push('');
+  }
+
+  if (callsNodes.length > 0) {
+    lines.push('### Calls (downstream)');
+    const byDepth = new Map<number, typeof callsNodes>();
+    for (const n of callsNodes) {
+      if (!byDepth.has(n.depth)) byDepth.set(n.depth, []);
+      byDepth.get(n.depth)!.push(n);
+    }
+    for (const [depth, nodes] of [...byDepth.entries()].sort((a, b) => a[0] - b[0])) {
+      for (const n of nodes) {
+        const indent = '  '.repeat(depth - 1);
+        const loc = n.file ? ` — ${n.file}` : '';
+        lines.push(`${indent}- \`${n.name}\`${loc}`);
+      }
+    }
+    lines.push('');
+  }
+
+  // Compact edge list
+  lines.push('### Edges');
+  for (const edge of result.edges) {
+    lines.push(`- \`${edge.from}\` → \`${edge.to}\``);
+  }
+
+  return lines.join('\n');
 }
 
 // --- Callers / Calls ---
