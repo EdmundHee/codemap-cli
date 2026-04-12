@@ -27,6 +27,8 @@ import {
   getOverview,
   getModule,
   search,
+  searchClustered,
+  exploreFunction,
   getCallers,
   getCalls,
   getFunction,
@@ -48,6 +50,8 @@ import {
   formatModule,
   formatQueryResult,
   formatSearchResults,
+  formatClusteredResults,
+  formatExplore,
   formatCallers,
   formatCalls,
   formatProjects,
@@ -321,10 +325,11 @@ function registerSearchTools(
         return mdResult(formatQueryResult(fileResult));
       }
 
-      // Fall back to fuzzy search
-      const results = search(data, name);
-      if (results.length === 0) return mdResult(`No results for "${name}".`);
-      return mdResult(formatSearchResults(results.map((r) => ({ type: r.type, name: r.name, file: r.file }))));
+      // Fall back to clustered search — groups results by call-graph
+      // relationships, surfacing hub functions instead of flat lists
+      const clustered = searchClustered(data, name);
+      if (clustered.length === 0) return mdResult(`No results for "${name}".`);
+      return mdResult(formatClusteredResults(clustered));
     })
   );
 
@@ -413,6 +418,31 @@ function registerSearchTools(
         Array.isArray(dependents) ? dependents : [dependents],
         'imported_by'
       ));
+    })
+  );
+
+  server.tool(
+    'codemap_explore',
+    'Explore the call-graph neighborhood of a function using BFS traversal. '
+    + 'Returns what a function calls (downstream) and what calls it (upstream) up to N hops deep. '
+    + 'Use when you want to understand how a function fits into the broader architecture — '
+    + 'its callers, callees, and transitive dependencies — without reading source files. '
+    + 'Much more token-efficient than combining codemap_callers + codemap_calls + reading files. '
+    + 'Answers: "show me the call tree around this function", "what is the blast radius?", '
+    + '"how does this function connect to the rest of the codebase?".',
+    {
+      name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate", "parseConfig")'),
+      depth: z.number().optional().describe('How many hops to traverse (1-5, default 2). Higher = more context but more tokens.'),
+      direction: z.enum(['calls', 'callers', 'both']).optional()
+        .describe('"calls" = downstream only, "callers" = upstream only, "both" = full neighborhood (default)'),
+      project: projectParam,
+    },
+    tracked('codemap_explore', async ({ name, depth, direction, project: projectName }) => {
+      const resolved = resolveProject(projects, projectName);
+      if ('error' in resolved) return errorResult(resolved.error);
+      const result = exploreFunction(resolved.data, name, { depth, direction });
+      if (!result) return errorResult(`Function "${name}" not found in the call graph.`);
+      return mdResult(formatExplore(result));
     })
   );
 }
