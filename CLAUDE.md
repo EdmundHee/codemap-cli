@@ -1,3 +1,9 @@
+## Git Workflow
+
+- **Always work on the `dev` branch.** Do not commit directly to `main`.
+- Before starting any work, ensure you are on `dev` and it is up to date.
+- Create feature branches off `dev` if needed, and merge back into `dev`.
+
 <!-- codemap:start -->
 ## Codemap — MANDATORY USAGE RULES
 
