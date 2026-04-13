@@ -8,8 +8,8 @@ Before modifying this code, we need to understand the full blast radius — what
 
 Steps:
 1. Call `codemap_query` to find the exact function/class and confirm its location and signature
-2. Call `codemap_callers` to find every call site — these are all the places that could break
-3. Call `codemap_calls` to find all dependencies — these are what the function relies on
+2. Call `codemap_explore` with depth=2 to see the full call-graph neighborhood (callers + callees) in one call
+3. If the neighborhood is large (>10 callers), also call `codemap_callers` for the complete caller list
 4. For each caller's directory, call `codemap_module` to understand the surrounding context
 5. Call `codemap_health` scoped to the affected modules to check existing code quality
 

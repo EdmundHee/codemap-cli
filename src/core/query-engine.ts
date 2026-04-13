@@ -5,6 +5,7 @@
 
 import { CodemapData } from '../output/json-generator';
 import { clusterSearchResults, ClusteredSearchResult } from '../analyzers/cluster';
+import { rankedSearch } from './search-index';
 
 export interface QueryResult {
   type: 'function' | 'class' | 'method' | 'file' | 'module' | 'type' | 'summary';
@@ -154,74 +155,81 @@ export function getModule(data: CodemapData, directory: string): any | null {
 
 /**
  * Search across all names (classes, functions, methods, types, files).
- * Used as a fuzzy fallback in codemap_query when exact lookups fail.
+ * Uses token-split matching with relevance scoring for multi-word queries.
+ * Falls back to substring matching for file path searches.
  */
-export function search(data: CodemapData, term: string): QueryResult[] {
-  const lowerTerm = term.toLowerCase();
-  const results: QueryResult[] = [];
+export function search(data: CodemapData, term: string, maxResults: number = 30): QueryResult[] {
+  // Build a flat list of all searchable entities
+  const candidates: Array<QueryResult & { exported?: boolean; callerCount?: number }> = [];
 
-  // Search files
-  for (const filePath of Object.keys(data.files)) {
-    if (filePath.toLowerCase().includes(lowerTerm)) {
-      results.push({ type: 'file', name: filePath, file: filePath, data: data.files[filePath] });
-    }
+  // Files
+  for (const [filePath, fileData] of Object.entries(data.files)) {
+    candidates.push({ type: 'file', name: filePath, file: filePath, data: fileData });
   }
 
-  // Search classes
+  // Classes + methods
   for (const [name, cls] of Object.entries(data.classes) as [string, any][]) {
-    if (name.toLowerCase().includes(lowerTerm)) {
-      results.push({ type: 'class', name, file: cls.file, data: cls });
-    }
+    candidates.push({
+      type: 'class', name, file: cls.file, data: cls,
+      callerCount: cls.called_by?.length || 0,
+    });
     for (const method of cls.methods) {
-      if (method.name.toLowerCase().includes(lowerTerm)) {
-        results.push({
-          type: 'method',
-          name: `${name}.${method.name}`,
-          file: cls.file,
-          data: { ...method, class: name },
-        });
-      }
-    }
-  }
-
-  // Search functions
-  for (const [name, func] of Object.entries(data.functions) as [string, any][]) {
-    if (name.toLowerCase().includes(lowerTerm)) {
-      results.push({ type: 'function', name, file: func.file, data: func });
-    }
-  }
-
-  // Search types
-  for (const [name, type] of Object.entries(data.types) as [string, any][]) {
-    if (name.toLowerCase().includes(lowerTerm)) {
-      results.push({ type: 'type', name, file: type.file, data: type });
-    }
-  }
-
-  // Search routes
-  for (const route of (data.routes || []) as any[]) {
-    if (
-      route.handler?.toLowerCase().includes(lowerTerm) ||
-      route.path?.toLowerCase().includes(lowerTerm)
-    ) {
-      const methods = Array.isArray(route.method) ? route.method.join(',') : route.method;
-      results.push({
-        type: 'function',
-        name: `[${methods}] ${route.path} → ${route.handler}`,
-        file: route.file,
-        data: route,
+      candidates.push({
+        type: 'method',
+        name: `${name}.${method.name}`,
+        file: cls.file,
+        data: { ...method, class: name },
+        exported: method.access === 'public',
+        callerCount: method.called_by?.length || 0,
       });
     }
   }
 
-  // Search models
-  for (const [name, model] of Object.entries(data.models || {}) as [string, any][]) {
-    if (name.toLowerCase().includes(lowerTerm)) {
-      results.push({ type: 'class', name: `${model.kind}: ${name}`, file: model.file, data: model });
-    }
+  // Functions
+  for (const [name, func] of Object.entries(data.functions) as [string, any][]) {
+    candidates.push({
+      type: 'function', name, file: func.file, data: func,
+      exported: func.exported,
+      callerCount: func.called_by?.length || 0,
+    });
   }
 
-  return results;
+  // Types
+  for (const [name, type] of Object.entries(data.types) as [string, any][]) {
+    candidates.push({
+      type: 'type', name, file: type.file, data: type,
+      exported: type.exported,
+    });
+  }
+
+  // Routes
+  for (const route of (data.routes || []) as any[]) {
+    const methods = Array.isArray(route.method) ? route.method.join(',') : route.method;
+    candidates.push({
+      type: 'function',
+      name: `[${methods}] ${route.path} → ${route.handler}`,
+      file: route.file,
+      data: route,
+    });
+  }
+
+  // Models
+  for (const [name, model] of Object.entries(data.models || {}) as [string, any][]) {
+    candidates.push({
+      type: 'class', name: `${model.kind}: ${name}`, file: model.file, data: model,
+    });
+  }
+
+  const scored = rankedSearch(candidates, term, (item) => ({
+    type: item.type,
+    exported: item.exported,
+    callerCount: item.callerCount,
+  }));
+
+  return scored.slice(0, maxResults).map((s) => {
+    const { exported: _, callerCount: __, ...result } = s.item as any;
+    return result as QueryResult;
+  });
 }
 
 /**

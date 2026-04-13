@@ -64,8 +64,29 @@ import {
   formatCircularDepsData,
   formatAnalysisReport,
 } from './formatters';
+import {
+  compactOverview,
+  compactModule,
+  compactQueryResult,
+  compactSearchResults,
+  compactClusteredResults,
+  compactExplore,
+  compactCallers,
+  compactCalls,
+  compactProjects,
+  compactHealth,
+  compactHealthDiff,
+  compactDependencies,
+  DetailLevel,
+} from './compact-formatter';
 import { computeTrend } from '../analyzers/history';
 import { UsageTracker, computeResponseBytes } from './usage-tracker';
+
+const formatParam = z.enum(['markdown', 'compact']).default('compact')
+  .describe('Output format: "compact" for AI/LLM consumption (default), "markdown" for human display');
+
+const detailParam = z.enum(['summary', 'signature', 'full']).default('signature')
+  .describe('Detail level: "summary" (name+file), "signature" (params+return, default), "full" (+calls/callers/complexity)');
 
 // --- Multi-project registry ---
 
@@ -225,8 +246,8 @@ function registerProjectTools(
     'List all registered codemap projects and their status (file counts, languages, frameworks). '
     + 'Use when you need to know which projects are available, check if codemap data exists, '
     + 'or discover project names for multi-project queries.',
-    {},
-    tracked('codemap_projects', async () => {
+    { format: formatParam },
+    tracked('codemap_projects', async ({ format }) => {
       const list = projects.map((p) => {
         const data = loadProjectData(p);
         return {
@@ -245,7 +266,7 @@ function registerProjectTools(
             : {}),
         };
       });
-      return mdResult(formatProjects(list));
+      return mdResult(format === 'compact' ? compactProjects(list) : formatProjects(list));
     })
   );
 
@@ -256,11 +277,12 @@ function registerProjectTools(
     + 'the project structure, explore the codebase, find where code lives, or orient yourself in an '
     + 'unfamiliar repo. Returns the full project map in one call — much faster than reading files or '
     + 'running ls/find/glob across directories.',
-    { project: projectParam },
-    tracked('codemap_overview', async ({ project: projectName }) => {
+    { format: formatParam, project: projectParam },
+    tracked('codemap_overview', async ({ format, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
-      return mdResult(formatOverview(getOverview(resolved.data)));
+      const overview = getOverview(resolved.data);
+      return mdResult(format === 'compact' ? compactOverview(overview) : formatOverview(overview));
     })
   );
 
@@ -272,14 +294,16 @@ function registerProjectTools(
     + 'signatures, parameters, and relationships in one call — replaces multiple file reads.',
     {
       directory: z.string().describe('Directory path to query (e.g. "src/core", "backend/api", "lib/utils")'),
+      detail: detailParam,
+      format: formatParam,
       project: projectParam,
     },
-    tracked('codemap_module', async ({ directory, project: projectName }) => {
+    tracked('codemap_module', async ({ directory, detail, format, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const result = getModule(resolved.data, directory);
       if (!result) return errorResult(`Module "${directory}" not found.`);
-      return mdResult(formatModule(result));
+      return mdResult(format === 'compact' ? compactModule(result, detail as DetailLevel) : formatModule(result));
     })
   );
 }
@@ -294,42 +318,46 @@ function registerSearchTools(
     'codemap_query',
     'Search for any function, class, method, type, interface, or file by name across the entire codebase. '
     + 'Use INSTEAD of grep/Grep/Glob when looking for where something is defined, finding a function '
-    + 'definition, locating a class, or checking if something already exists. Supports exact and fuzzy '
-    + 'matching. Returns the full signature, file location, parameters, return type, and call '
-    + 'relationships — much richer than grep output. Also use this to find existing reusable code '
-    + 'before writing new functions.',
+    + 'definition, locating a class, or checking if something already exists. Supports exact, fuzzy, '
+    + 'and multi-word matching (e.g. "call graph" finds buildCallGraph). Returns the full signature, '
+    + 'file location, parameters, return type, and call relationships — much richer than grep output. '
+    + 'Also use this to find existing reusable code before writing new functions.',
     {
-      name: z.string().describe('Name to search for — supports partial/fuzzy matching (e.g. "createOrder", "User", "parse", "validate")'),
+      name: z.string().describe('Name to search for — supports partial/fuzzy/multi-word matching (e.g. "createOrder", "User", "call graph")'),
+      detail: detailParam,
+      format: formatParam,
       project: projectParam,
     },
-    tracked('codemap_query', async ({ name, project: projectName }) => {
+    tracked('codemap_query', async ({ name, detail, format, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const { data } = resolved;
+      const isCompact = format === 'compact';
+      const dl = (detail || 'signature') as DetailLevel;
 
       // Try exact lookups first
       const funcResult = getFunction(data, name);
-      if (funcResult) return mdResult(formatQueryResult(funcResult));
+      if (funcResult) return mdResult(isCompact ? compactQueryResult(funcResult, dl) : formatQueryResult(funcResult));
 
       const clsResult = getClass(data, name);
-      if (clsResult) return mdResult(formatQueryResult(clsResult));
+      if (clsResult) return mdResult(isCompact ? compactQueryResult(clsResult, dl) : formatQueryResult(clsResult));
 
       const typeResult = getType(data, name);
-      if (typeResult) return mdResult(formatQueryResult(typeResult));
+      if (typeResult) return mdResult(isCompact ? compactQueryResult(typeResult, dl) : formatQueryResult(typeResult));
 
       const fileResult = getFile(data, name);
       if (fileResult) {
         if (Array.isArray(fileResult)) {
-          return mdResult(formatSearchResults(fileResult));
+          return mdResult(isCompact ? compactSearchResults(fileResult, dl) : formatSearchResults(fileResult));
         }
-        return mdResult(formatQueryResult(fileResult));
+        return mdResult(isCompact ? compactQueryResult(fileResult, dl) : formatQueryResult(fileResult));
       }
 
       // Fall back to clustered search — groups results by call-graph
       // relationships, surfacing hub functions instead of flat lists
       const clustered = searchClustered(data, name);
       if (clustered.length === 0) return mdResult(`No results for "${name}".`);
-      return mdResult(formatClusteredResults(clustered));
+      return mdResult(isCompact ? compactClusteredResults(clustered, dl) : formatClusteredResults(clustered));
     })
   );
 
@@ -341,12 +369,14 @@ function registerSearchTools(
     + 'reverse call graph in one query — faster and more complete than grep/Grep for finding usages.',
     {
       name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate", "parseConfig")'),
+      format: formatParam,
       project: projectParam,
     },
-    tracked('codemap_callers', async ({ name, project: projectName }) => {
+    tracked('codemap_callers', async ({ name, format, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
-      return mdResult(formatCallers(getCallers(resolved.data, name)));
+      const result = getCallers(resolved.data, name);
+      return mdResult(format === 'compact' ? compactCallers(result) : formatCallers(result));
     })
   );
 
@@ -359,12 +389,14 @@ function registerSearchTools(
     + 'forward call graph in one query.',
     {
       name: z.string().describe('Function or method name (e.g. "createOrder", "UserService.validate", "buildReport")'),
+      format: formatParam,
       project: projectParam,
     },
-    tracked('codemap_calls', async ({ name, project: projectName }) => {
+    tracked('codemap_calls', async ({ name, format, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
-      return mdResult(formatCalls(getCalls(resolved.data, name)));
+      const result = getCalls(resolved.data, name);
+      return mdResult(format === 'compact' ? compactCalls(result) : formatCalls(result));
     })
   );
 
@@ -379,19 +411,21 @@ function registerSearchTools(
       file: z.string().describe('File path or partial path (e.g. "query-engine.ts", "src/core/config.ts")'),
       direction: z.enum(['imports', 'imported_by', 'both']).optional()
         .describe('Which direction to trace: "imports" (what this file uses), "imported_by" (what uses this file), or "both" (default)'),
+      format: formatParam,
       project: projectParam,
     },
-    tracked('codemap_dependencies', async ({ file, direction, project: projectName }) => {
+    tracked('codemap_dependencies', async ({ file, direction, format, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const dir = direction || 'both';
+      const fmt = format === 'compact' ? compactDependencies : formatDependencies;
 
       if (dir === 'imports' || dir === 'both') {
         const deps = getFileDependencies(resolved.data, file);
         if (!deps) return errorResult(`File "${file}" not found in the import graph.`);
 
         if (dir === 'imports') {
-          return mdResult(formatDependencies(
+          return mdResult(fmt(
             Array.isArray(deps) ? deps : [deps],
             'imports'
           ));
@@ -408,13 +442,13 @@ function registerSearchTools(
           return { ...d, imported_by: match?.imported_by || [] };
         });
 
-        return mdResult(formatDependencies(merged, 'both'));
+        return mdResult(fmt(merged, 'both'));
       }
 
       // imported_by only
       const dependents = getFileDependents(resolved.data, file);
       if (!dependents) return errorResult(`File "${file}" not found in the import graph.`);
-      return mdResult(formatDependencies(
+      return mdResult(fmt(
         Array.isArray(dependents) ? dependents : [dependents],
         'imported_by'
       ));
@@ -435,14 +469,15 @@ function registerSearchTools(
       depth: z.number().optional().describe('How many hops to traverse (1-5, default 2). Higher = more context but more tokens.'),
       direction: z.enum(['calls', 'callers', 'both']).optional()
         .describe('"calls" = downstream only, "callers" = upstream only, "both" = full neighborhood (default)'),
+      format: formatParam,
       project: projectParam,
     },
-    tracked('codemap_explore', async ({ name, depth, direction, project: projectName }) => {
+    tracked('codemap_explore', async ({ name, depth, direction, format, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const result = exploreFunction(resolved.data, name, { depth, direction });
       if (!result) return errorResult(`Function "${name}" not found in the call graph.`);
-      return mdResult(formatExplore(result));
+      return mdResult(format === 'compact' ? compactExplore(result) : formatExplore(result));
     })
   );
 }
@@ -464,14 +499,17 @@ function registerHealthTools(
         .string()
         .optional()
         .describe('Optional scope to filter: module path (e.g. "src/core") or "project" for full report'),
+      format: formatParam,
       project: projectParam,
     },
-    tracked('codemap_health', async ({ scope, project: projectName }) => {
+    tracked('codemap_health', async ({ scope, format, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const { data } = resolved;
       if (!data.health) return errorResult('No health data. Regenerate codemap with latest version: `codemap generate`');
-      return mdResult(formatHealth(data.health, data.module_metrics || [], scope));
+      return mdResult(format === 'compact'
+        ? compactHealth(data.health, data.module_metrics || [], scope)
+        : formatHealth(data.health, data.module_metrics || [], scope));
     })
   );
 
@@ -481,15 +519,16 @@ function registerHealthTools(
     + 'improved or degraded, and trend direction. Use after making changes to verify code quality '
     + 'improved, or in CI to detect regressions. Answers: "did my changes improve or hurt quality?".',
     {
+      format: formatParam,
       project: projectParam,
     },
-    tracked('codemap_health_diff', async ({ project: projectName }) => {
+    tracked('codemap_health_diff', async ({ format, project: projectName }) => {
       const resolved = resolveProject(projects, projectName);
       if ('error' in resolved) return errorResult(resolved.error);
       const outputDir = join(resolved.project.root, '.codemap');
       const trend = computeTrend(outputDir);
       if (!trend) return mdResult('No history available. Run `codemap generate` at least twice to see trends.');
-      return mdResult(formatHealthDiff(trend));
+      return mdResult(format === 'compact' ? compactHealthDiff(trend) : formatHealthDiff(trend));
     })
   );
 
