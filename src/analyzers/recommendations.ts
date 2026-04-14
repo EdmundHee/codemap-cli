@@ -372,24 +372,47 @@ function buildDuplicateRecommendation(dup: DuplicateGroup, data: CodemapData | n
     `Run \`npm test\` to confirm no regressions`,
   );
 
-  return {
-    id: `dup-${dup.signature.replace(/[^a-zA-Z0-9]/g, '-')}`,
-    category: 'duplicates',
-    priority,
-    title: `Deduplicate \`${dup.signature}\` (${dup.functions.length} copies, ${Math.round(dup.similarity * 100)}% similar)`,
-    description: `${dup.functions.length} functions named \`${dup.signature}\` exist across ${files.length} files ` +
+  const isStructural = dup.matchType === 'structural';
+  const funcNames = dup.functions.map(f => `\`${f.name}\``).join(' and ');
+
+  const title = isStructural
+    ? `Functionally similar: ${funcNames} (${Math.round(dup.similarity * 100)}% similar)`
+    : `Deduplicate \`${dup.signature}\` (${dup.functions.length} copies, ${Math.round(dup.similarity * 100)}% similar)`;
+
+  const description = isStructural
+    ? `${funcNames} in ${files.length} different files have ${Math.round(dup.similarity * 100)}% structural similarity despite different names. ` +
+      (sharedCalls.length > 0
+        ? `They share ${sharedCalls.length} common internal calls (${sharedCalls.slice(0, 5).join(', ')}${sharedCalls.length > 5 ? '...' : ''}). `
+        : '') +
+      `Review and consolidate into a single shared function.`
+    : `${dup.functions.length} functions named \`${dup.signature}\` exist across ${files.length} files ` +
       `with ${Math.round(dup.similarity * 100)}% call pattern similarity. ` +
       (sharedCalls.length > 0
         ? `They share ${sharedCalls.length} common internal calls (${sharedCalls.slice(0, 5).join(', ')}${sharedCalls.length > 5 ? '...' : ''}). `
         : '') +
-      `Extract into \`${sharedLocation}\`.`,
+      `Extract into \`${sharedLocation}\`.`;
+
+  if (isStructural) {
+    actionPlan.unshift(
+      `Review and consolidate ${funcNames} — they perform equivalent operations under different names`,
+    );
+  }
+
+  return {
+    id: `dup-${dup.signature.replace(/[^a-zA-Z0-9]/g, '-')}`,
+    category: 'duplicates',
+    priority,
+    title,
+    description,
     affected: dup.functions.map(f => ({
       name: f.name,
       file: f.file,
       detail: f.params ? `params: (${f.params})` : 'no params',
     })),
     action_plan: actionPlan,
-    impact: `Eliminate ${dup.functions.length - 1} redundant implementations, improving maintainability`,
+    impact: isStructural
+      ? `Consolidate ${funcNames} into a single implementation, reducing redundancy`
+      : `Eliminate ${dup.functions.length - 1} redundant implementations, improving maintainability`,
     effort: dup.similarity >= 0.7 ? 'small' : 'medium',
     context: {
       signatures: signatures.length > 0 ? signatures : undefined,

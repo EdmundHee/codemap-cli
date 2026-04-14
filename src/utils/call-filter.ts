@@ -131,9 +131,13 @@ function normalizeCall(call: string): string | null {
   let normalized = call.trim();
   if (normalized.length <= 1) return null;
 
+  const hadThisSelfPrefix = /^(this|self)\./.test(normalized);
   normalized = normalized.replace(/^(this|self)\./, '');
-  if (BUILTIN_CALLS.has(normalized)) return null;
-  if (isChainedBuiltin(normalized)) return null;
+
+  if (!hadThisSelfPrefix) {
+    if (BUILTIN_CALLS.has(normalized)) return null;
+    if (isChainedBuiltin(normalized)) return null;
+  }
 
   if (normalized.includes('\n')) {
     const collapsed = collapseMultiline(normalized);
@@ -148,7 +152,7 @@ function normalizeCall(call: string): string | null {
   normalized = extractRootCall(normalized);
 
   if (!normalized || normalized.length <= 1) return null;
-  if (BUILTIN_CALLS.has(normalized)) return null;
+  if (!hadThisSelfPrefix && BUILTIN_CALLS.has(normalized)) return null;
 
   return normalized;
 }

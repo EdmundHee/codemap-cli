@@ -1,4 +1,4 @@
-import { detectDuplicates, DuplicateGroup } from '../duplicates';
+import { detectDuplicates, DuplicateGroup, computeMultiSignalSimilarity, FunctionSignature } from '../duplicates';
 import { ParsedFile } from '../../parsers/parser.interface';
 import { ScannedFile } from '../../core/scanner';
 
@@ -215,5 +215,194 @@ describe('detectDuplicates', () => {
     const dupes = detectDuplicates(parsed);
     expect(dupes).toHaveLength(1);
     expect(dupes[0].functions).toHaveLength(3);
+  });
+});
+
+// ─── Cross-name structural similarity ─────────────────────────────────────
+
+describe('cross-name structural similarity detection', () => {
+  test('detects functions with different names but identical calls/params/structure', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/a.ts'),
+        functions: [
+          { name: 'loadConfig', params: [{ name: 'path', type: 'string' }], return_type: 'Config', async: false, exported: true, calls: ['readFileSync', 'JSON.parse', 'validate'], complexity: 3, lineCount: 12, nestingDepth: 1 },
+        ],
+      }),
+      makeParsed({
+        file: makeFile('src/b.ts'),
+        functions: [
+          { name: 'parseSettings', params: [{ name: 'path', type: 'string' }], return_type: 'Config', async: false, exported: true, calls: ['readFileSync', 'JSON.parse', 'validate'], complexity: 3, lineCount: 12, nestingDepth: 1 },
+        ],
+      }),
+    ];
+
+    const dupes = detectDuplicates(parsed);
+    const structural = dupes.filter(d => d.matchType === 'structural');
+    expect(structural.length).toBeGreaterThanOrEqual(1);
+    expect(structural[0].functions.map(f => f.name).sort()).toEqual(['loadConfig', 'parseSettings']);
+  });
+
+  test('does NOT match functions with different names AND different calls/structure', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/a.ts'),
+        functions: [
+          { name: 'readData', params: [], return_type: 'void', async: false, exported: true, calls: ['readFile', 'parse'], complexity: 1, lineCount: 5, nestingDepth: 0 },
+        ],
+      }),
+      makeParsed({
+        file: makeFile('src/b.ts'),
+        functions: [
+          { name: 'renderUI', params: [{ name: 'props', type: 'Props' }, { name: 'ref', type: 'Ref' }], return_type: 'JSX.Element', async: false, exported: true, calls: ['createElement', 'useState', 'useEffect', 'render'], complexity: 5, lineCount: 40, nestingDepth: 3 },
+        ],
+      }),
+    ];
+
+    const dupes = detectDuplicates(parsed);
+    const structural = dupes.filter(d => d.matchType === 'structural');
+    expect(structural).toHaveLength(0);
+  });
+
+  test('same-name matches have matchType: name', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/a.ts'),
+        functions: [
+          { name: 'formatDate', params: [{ name: 'date', type: 'Date' }], return_type: 'string', async: false, exported: true, calls: ['toISOString', 'split'], complexity: 1, lineCount: 5, nestingDepth: 0 },
+        ],
+      }),
+      makeParsed({
+        file: makeFile('src/b.ts'),
+        functions: [
+          { name: 'formatDate', params: [{ name: 'date', type: 'Date' }], return_type: 'string', async: false, exported: true, calls: ['toISOString', 'split'], complexity: 1, lineCount: 5, nestingDepth: 0 },
+        ],
+      }),
+    ];
+
+    const dupes = detectDuplicates(parsed);
+    expect(dupes[0].matchType).toBe('name');
+  });
+
+  test('cross-name matches have matchType: structural', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/a.ts'),
+        functions: [
+          { name: 'loadConfig', params: [{ name: 'path', type: 'string' }], return_type: 'Config', async: false, exported: true, calls: ['readFileSync', 'JSON.parse', 'validate'], complexity: 3, lineCount: 12, nestingDepth: 1 },
+        ],
+      }),
+      makeParsed({
+        file: makeFile('src/b.ts'),
+        functions: [
+          { name: 'parseSettings', params: [{ name: 'path', type: 'string' }], return_type: 'Config', async: false, exported: true, calls: ['readFileSync', 'JSON.parse', 'validate'], complexity: 3, lineCount: 12, nestingDepth: 1 },
+        ],
+      }),
+    ];
+
+    const dupes = detectDuplicates(parsed);
+    const structural = dupes.filter(d => d.matchType === 'structural');
+    expect(structural.length).toBeGreaterThanOrEqual(1);
+    expect(structural[0].matchType).toBe('structural');
+  });
+
+  test('results are sorted by similarity descending (mixed name and structural)', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/a.ts'),
+        functions: [
+          { name: 'low', params: [], return_type: 'void', async: false, exported: true, calls: ['a', 'b', 'c'], complexity: 1, lineCount: 5, nestingDepth: 0 },
+          { name: 'loadConfig', params: [{ name: 'p', type: 'string' }], return_type: 'Config', async: false, exported: true, calls: ['readFileSync', 'JSON.parse', 'validate'], complexity: 3, lineCount: 12, nestingDepth: 1 },
+        ],
+      }),
+      makeParsed({
+        file: makeFile('src/b.ts'),
+        functions: [
+          { name: 'low', params: [], return_type: 'void', async: false, exported: true, calls: ['a', 'd', 'e', 'f'], complexity: 1, lineCount: 5, nestingDepth: 0 },
+          { name: 'parseSettings', params: [{ name: 'p', type: 'string' }], return_type: 'Config', async: false, exported: true, calls: ['readFileSync', 'JSON.parse', 'validate'], complexity: 3, lineCount: 12, nestingDepth: 1 },
+        ],
+      }),
+    ];
+
+    const dupes = detectDuplicates(parsed);
+    for (let i = 1; i < dupes.length; i++) {
+      expect(dupes[i].similarity).toBeLessThanOrEqual(dupes[i - 1].similarity);
+    }
+  });
+
+  test('pre-filter: functions with lineCount ratio > 2x are not compared cross-name', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/a.ts'),
+        functions: [
+          { name: 'shortFunc', params: [{ name: 'path', type: 'string' }], return_type: 'Config', async: false, exported: true, calls: ['readFileSync', 'JSON.parse', 'validate'], complexity: 3, lineCount: 5, nestingDepth: 1 },
+        ],
+      }),
+      makeParsed({
+        file: makeFile('src/b.ts'),
+        functions: [
+          { name: 'longFunc', params: [{ name: 'path', type: 'string' }], return_type: 'Config', async: false, exported: true, calls: ['readFileSync', 'JSON.parse', 'validate'], complexity: 3, lineCount: 50, nestingDepth: 1 },
+        ],
+      }),
+    ];
+
+    const dupes = detectDuplicates(parsed);
+    const structural = dupes.filter(d => d.matchType === 'structural');
+    expect(structural).toHaveLength(0);
+  });
+});
+
+// ─── computeMultiSignalSimilarity ─────────────────────────────────────────
+
+describe('computeMultiSignalSimilarity', () => {
+  function makeSig(overrides: Partial<FunctionSignature>): FunctionSignature {
+    return {
+      name: 'fn',
+      file: 'src/a.ts',
+      paramSignature: '',
+      calls: [],
+      returnType: 'void',
+      complexity: 1,
+      lineCount: 10,
+      nestingDepth: 0,
+      paramCount: 0,
+      ...overrides,
+    };
+  }
+
+  test('identical functions return ~1.0', () => {
+    const a = makeSig({ calls: ['readFile', 'JSON.parse', 'validate'], paramSignature: 'path:string', paramCount: 1, returnType: 'object', complexity: 3, lineCount: 15, nestingDepth: 1 });
+    const b = makeSig({ calls: ['readFile', 'JSON.parse', 'validate'], paramSignature: 'path:string', paramCount: 1, returnType: 'object', complexity: 3, lineCount: 15, nestingDepth: 1, file: 'src/b.ts' });
+
+    const sim = computeMultiSignalSimilarity(a, b);
+    expect(sim).toBeGreaterThan(0.9);
+  });
+
+  test('completely different functions return ~0.0', () => {
+    const a = makeSig({ calls: ['readFile', 'parse'], paramSignature: 'path:string', paramCount: 1, returnType: 'Buffer', complexity: 5, lineCount: 30, nestingDepth: 3 });
+    const b = makeSig({ calls: ['render', 'mount', 'setState'], paramSignature: 'props:Props,ref:Ref', paramCount: 2, returnType: 'JSX.Element', complexity: 1, lineCount: 5, nestingDepth: 0, file: 'src/b.ts' });
+
+    const sim = computeMultiSignalSimilarity(a, b);
+    expect(sim).toBeLessThan(0.3);
+  });
+
+  test('same calls but different structure scores lower than identical', () => {
+    const identical = makeSig({ calls: ['readFile', 'JSON.parse', 'validate'], complexity: 2, lineCount: 10, nestingDepth: 0 });
+    const identicalB = makeSig({ ...identical, file: 'src/b.ts' });
+    const different = makeSig({ calls: ['readFile', 'JSON.parse', 'validate'], complexity: 15, lineCount: 80, nestingDepth: 5, file: 'src/b.ts' });
+
+    const identicalSim = computeMultiSignalSimilarity(identical, identicalB);
+    const mismatchSim = computeMultiSignalSimilarity(identical, different);
+    expect(mismatchSim).toBeGreaterThan(0.4);
+    expect(mismatchSim).toBeLessThan(identicalSim);
+  });
+
+  test('same structure but different calls returns mid-range', () => {
+    const a = makeSig({ calls: ['readFile', 'writeFile'], complexity: 3, lineCount: 15, nestingDepth: 1, paramCount: 2, paramSignature: 'a:string,b:string', returnType: 'void' });
+    const b = makeSig({ calls: ['fetch', 'decode'], complexity: 3, lineCount: 15, nestingDepth: 1, paramCount: 2, paramSignature: 'a:string,b:string', returnType: 'void', file: 'src/b.ts' });
+
+    const sim = computeMultiSignalSimilarity(a, b);
+    expect(sim).toBeGreaterThan(0.35);
+    expect(sim).toBeLessThan(0.75);
   });
 });

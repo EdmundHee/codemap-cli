@@ -6,6 +6,7 @@ import { ParsedFile } from '../parsers/parser.interface';
 import { ImportGraph } from '../analyzers/import-graph';
 import { CallGraph, buildReverseCallGraph, ReverseCallGraph } from '../analyzers/call-graph';
 import { computeModuleCoupling, ModuleMetrics } from '../analyzers/coupling';
+import { detectDeadCode } from '../analyzers/dead-code';
 
 export interface CodemapData {
   version: string;
@@ -214,7 +215,6 @@ interface CollectedMetrics {
   functionsOverLines: number;
   classesOverMethodLimit: number;
   maxFunc: { name: string; file: string; value: number } | null;
-  deadFunctions: number;
   hotspots: HealthHotspot[];
 }
 
@@ -224,15 +224,12 @@ interface FunctionMetricsAccum {
   functionsOverComplexity: number;
   functionsOverLines: number;
   maxFunc: { name: string; file: string; value: number } | null;
-  deadFunctions: number;
   hotspots: HealthHotspot[];
 }
 
 function processFunctionMetrics(
   func: any,
-  file: string,
-  entryPointFiles: Set<string>,
-  reverseCallGraph: ReverseCallGraph
+  file: string
 ): FunctionMetricsAccum {
   const accum: FunctionMetricsAccum = {
     totalComplexity: func.complexity,
@@ -240,7 +237,6 @@ function processFunctionMetrics(
     functionsOverComplexity: 0,
     functionsOverLines: 0,
     maxFunc: { name: func.name, file, value: func.complexity },
-    deadFunctions: 0,
     hotspots: [],
   };
 
@@ -260,12 +256,6 @@ function processFunctionMetrics(
 
   if (func.lineCount > THRESHOLDS.functionLines) {
     accum.functionsOverLines++;
-  }
-
-  const callers = reverseCallGraph[func.name];
-  const isEntryFile = entryPointFiles.has(file);
-  if ((!callers || callers.length === 0) && func.exported && !isEntryFile) {
-    accum.deadFunctions++;
   }
 
   return accum;
@@ -329,9 +319,7 @@ function processClassMetrics(
 }
 
 function collectFunctionMetrics(
-  parsed: ParsedFile[],
-  reverseCallGraph: ReverseCallGraph,
-  entryPointFiles: Set<string>
+  parsed: ParsedFile[]
 ): CollectedMetrics {
   let totalComplexity = 0;
   let totalFunctions = 0;
@@ -340,17 +328,15 @@ function collectFunctionMetrics(
   let functionsOverLines = 0;
   let classesOverMethodLimit = 0;
   let maxFunc: { name: string; file: string; value: number } | null = null;
-  let deadFunctions = 0;
   const hotspots: HealthHotspot[] = [];
 
   for (const p of parsed) {
     for (const func of p.functions) {
-      const metrics = processFunctionMetrics(func, p.file.relative, entryPointFiles, reverseCallGraph);
+      const metrics = processFunctionMetrics(func, p.file.relative);
       totalFunctions += metrics.totalFunctions;
       totalComplexity += metrics.totalComplexity;
       functionsOverComplexity += metrics.functionsOverComplexity;
       functionsOverLines += metrics.functionsOverLines;
-      deadFunctions += metrics.deadFunctions;
       hotspots.push(...metrics.hotspots);
       if (!maxFunc || (metrics.maxFunc && metrics.maxFunc.value > maxFunc.value)) {
         maxFunc = metrics.maxFunc;
@@ -380,7 +366,6 @@ function collectFunctionMetrics(
     functionsOverLines,
     classesOverMethodLimit,
     maxFunc,
-    deadFunctions,
     hotspots,
   };
 }
@@ -389,14 +374,14 @@ function collectFunctionMetrics(
  * Compute health score from collected metrics.
  * Takes aggregated metrics and computes the final score (0-100) based on penalties.
  */
-function computeHealthScore(metrics: CollectedMetrics): number {
-  const { totalFunctions, totalClasses, deadFunctions, functionsOverComplexity, functionsOverLines, classesOverMethodLimit } = metrics;
+function computeHealthScore(metrics: CollectedMetrics, deadFunctionCount: number): number {
+  const { totalFunctions, totalClasses, functionsOverComplexity, functionsOverLines, classesOverMethodLimit } = metrics;
 
   // Use percentages to be fair across project sizes
   const complexityPct = totalFunctions > 0 ? (functionsOverComplexity / totalFunctions) * 100 : 0;
   const sizePct = totalFunctions > 0 ? (functionsOverLines / totalFunctions) * 100 : 0;
   const godClassPct = totalClasses > 0 ? (classesOverMethodLimit / totalClasses) * 100 : 0;
-  const deadPct = totalFunctions > 0 ? (deadFunctions / totalFunctions) * 100 : 0;
+  const deadPct = totalFunctions > 0 ? (deadFunctionCount / totalFunctions) * 100 : 0;
 
   const penalties = [
     Math.min(25, complexityPct * 0.8),                 // complexity: 25% of fns over threshold → 20pt penalty
@@ -417,21 +402,20 @@ function computeHealth(
   reverseCallGraph: ReverseCallGraph,
   entryPoints: string[]
 ): HealthData {
-  const entryPointFiles = new Set(entryPoints);
+  // Collect complexity/size metrics from parsed files
+  const metrics = collectFunctionMetrics(parsed);
 
-  // Collect all metrics from parsed files
-  const metrics = collectFunctionMetrics(parsed, reverseCallGraph, entryPointFiles);
+  // Use the dead code analyzer for consistent dead code counting
+  const deadCodeData = detectDeadCode(parsed, reverseCallGraph, entryPoints);
 
-  // Compute the health score
-  const score = computeHealthScore(metrics);
+  // Health penalty uses only high-confidence dead code
+  const score = computeHealthScore(metrics, deadCodeData.highConfidenceCount);
 
   // Sort hotspots by severity (critical first) then by value descending
   metrics.hotspots.sort((a, b) => {
     if (a.severity !== b.severity) return a.severity === 'critical' ? -1 : 1;
     return b.value - a.value;
   });
-
-  const deadPct = metrics.totalFunctions > 0 ? (metrics.deadFunctions / metrics.totalFunctions) * 100 : 0;
 
   return {
     score,
@@ -445,8 +429,8 @@ function computeHealth(
       functions_over_complexity_threshold: metrics.functionsOverComplexity,
       functions_over_line_threshold: metrics.functionsOverLines,
       classes_over_method_limit: metrics.classesOverMethodLimit,
-      dead_function_count: metrics.deadFunctions,
-      dead_function_percentage: Math.round(deadPct * 100) / 100,
+      dead_function_count: deadCodeData.deadFunctions.length,
+      dead_function_percentage: deadCodeData.deadCodePercentage,
     },
     hotspots: metrics.hotspots.slice(0, 20), // Top 20 hotspots
   };
