@@ -163,7 +163,7 @@ describe('detectDeadCode', () => {
     expect(result.totalDeadLines).toBe(20);
   });
 
-  test('marks exported dead functions correctly', () => {
+  test('marks exported dead functions correctly with low confidence', () => {
     const parsed: ParsedFile[] = [
       makeParsed({
         file: makeFile('src/api.ts'),
@@ -178,6 +178,7 @@ describe('detectDeadCode', () => {
 
     const result = detectDeadCode(parsed, reverseGraph, []);
     expect(result.deadFunctions[0].isExported).toBe(true);
+    expect(result.deadFunctions[0].confidence).toBe('low');
   });
 
   test('handles empty parsed files', () => {
@@ -185,6 +186,157 @@ describe('detectDeadCode', () => {
     expect(result.deadFunctions).toHaveLength(0);
     expect(result.totalFunctions).toBe(0);
     expect(result.deadCodePercentage).toBe(0);
+  });
+
+  test('unexported function with 0 callers has high confidence', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/internal.ts'),
+        functions: [
+          { name: 'internalHelper', params: [], return_type: 'void', async: false, exported: false, calls: [], complexity: 1, lineCount: 5, nestingDepth: 0 },
+        ],
+      }),
+    ];
+
+    const reverseGraph: ReverseCallGraph = Object.create(null);
+    reverseGraph['internalHelper'] = [];
+
+    const result = detectDeadCode(parsed, reverseGraph, []);
+    expect(result.deadFunctions[0].confidence).toBe('high');
+  });
+
+  test('public class method with 0 callers has low confidence', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/service.ts'),
+        classes: [{
+          name: 'MyService',
+          extends: null,
+          implements: [],
+          decorators: [],
+          methods: [
+            { name: 'publicMethod', params: [], return_type: 'void', decorators: [], access: 'public', async: false, static: false, calls: [], complexity: 1, lineCount: 10, nestingDepth: 0, instanceVarAccesses: [] },
+          ],
+          properties: [],
+        }],
+      }),
+    ];
+
+    const reverseGraph: ReverseCallGraph = Object.create(null);
+    reverseGraph['MyService.publicMethod'] = [];
+
+    const result = detectDeadCode(parsed, reverseGraph, []);
+    expect(result.deadFunctions[0].confidence).toBe('low');
+  });
+
+  test('private class method with 0 callers has high confidence', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/service.ts'),
+        classes: [{
+          name: 'MyService',
+          extends: null,
+          implements: [],
+          decorators: [],
+          methods: [
+            { name: 'privateMethod', params: [], return_type: 'void', decorators: [], access: 'private', async: false, static: false, calls: [], complexity: 1, lineCount: 10, nestingDepth: 0, instanceVarAccesses: [] },
+          ],
+          properties: [],
+        }],
+      }),
+    ];
+
+    const reverseGraph: ReverseCallGraph = Object.create(null);
+    reverseGraph['MyService.privateMethod'] = [];
+
+    const result = detectDeadCode(parsed, reverseGraph, []);
+    expect(result.deadFunctions[0].confidence).toBe('high');
+  });
+
+  test('highConfidenceCount correctly counts only high-confidence entries', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/mixed.ts'),
+        functions: [
+          { name: 'exportedDead', params: [], return_type: 'void', async: false, exported: true, calls: [], complexity: 1, lineCount: 5, nestingDepth: 0 },
+          { name: 'privateDead', params: [], return_type: 'void', async: false, exported: false, calls: [], complexity: 1, lineCount: 5, nestingDepth: 0 },
+          { name: 'anotherPrivate', params: [], return_type: 'void', async: false, exported: false, calls: [], complexity: 1, lineCount: 5, nestingDepth: 0 },
+        ],
+      }),
+    ];
+
+    const reverseGraph: ReverseCallGraph = Object.create(null);
+    reverseGraph['exportedDead'] = [];
+    reverseGraph['privateDead'] = [];
+    reverseGraph['anotherPrivate'] = [];
+
+    const result = detectDeadCode(parsed, reverseGraph, []);
+    expect(result.deadFunctions).toHaveLength(3);
+    expect(result.highConfidenceCount).toBe(2);
+  });
+
+  test('function re-exported from another file gets low confidence', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/utils.ts'),
+        functions: [
+          { name: 'helperA', params: [], return_type: 'void', async: false, exported: false, calls: [], complexity: 1, lineCount: 10, nestingDepth: 0 },
+        ],
+      }),
+      makeParsed({
+        file: makeFile('src/index.ts'),
+        exports: [{ name: 'helperA', kind: 'function' }],
+      }),
+    ];
+
+    const reverseGraph: ReverseCallGraph = Object.create(null);
+    reverseGraph['helperA'] = [];
+
+    const result = detectDeadCode(parsed, reverseGraph, []);
+    expect(result.deadFunctions[0].confidence).toBe('low');
+  });
+
+  test('function not in any other files exports gets high confidence', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/utils.ts'),
+        functions: [
+          { name: 'internal', params: [], return_type: 'void', async: false, exported: false, calls: [], complexity: 1, lineCount: 10, nestingDepth: 0 },
+        ],
+      }),
+      makeParsed({
+        file: makeFile('src/index.ts'),
+        exports: [{ name: 'somethingElse', kind: 'function' }],
+      }),
+    ];
+
+    const reverseGraph: ReverseCallGraph = Object.create(null);
+    reverseGraph['internal'] = [];
+
+    const result = detectDeadCode(parsed, reverseGraph, []);
+    expect(result.deadFunctions[0].confidence).toBe('high');
+  });
+
+  test('function exported from own file AND re-exported still gets low confidence', () => {
+    const parsed: ParsedFile[] = [
+      makeParsed({
+        file: makeFile('src/utils.ts'),
+        functions: [
+          { name: 'sharedHelper', params: [], return_type: 'void', async: false, exported: true, calls: [], complexity: 1, lineCount: 10, nestingDepth: 0 },
+        ],
+        exports: [{ name: 'sharedHelper', kind: 'function' }],
+      }),
+      makeParsed({
+        file: makeFile('src/index.ts'),
+        exports: [{ name: 'sharedHelper', kind: 'function' }],
+      }),
+    ];
+
+    const reverseGraph: ReverseCallGraph = Object.create(null);
+    reverseGraph['sharedHelper'] = [];
+
+    const result = detectDeadCode(parsed, reverseGraph, []);
+    expect(result.deadFunctions[0].confidence).toBe('low');
   });
 
   test('exempts constructors in classes', () => {

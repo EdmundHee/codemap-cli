@@ -17,20 +17,21 @@ import { HealthHotspot } from '../../output/json-generator';
 
 describe('generateDeadCodeRecommendations', () => {
   test('returns empty for no dead code', () => {
-    const data: DeadCodeData = { deadFunctions: [], totalDeadLines: 0, deadCodePercentage: 0, totalFunctions: 10 };
+    const data: DeadCodeData = { deadFunctions: [], totalDeadLines: 0, deadCodePercentage: 0, totalFunctions: 10, highConfidenceCount: 0 };
     expect(generateDeadCodeRecommendations(data)).toEqual([]);
   });
 
   test('generates batch recommendation for files with 3+ dead functions', () => {
     const data: DeadCodeData = {
       deadFunctions: [
-        { name: 'funcA', file: 'src/utils.ts', lineCount: 10, isExported: false, type: 'function' },
-        { name: 'funcB', file: 'src/utils.ts', lineCount: 15, isExported: false, type: 'function' },
-        { name: 'funcC', file: 'src/utils.ts', lineCount: 20, isExported: true, type: 'function' },
+        { name: 'funcA', file: 'src/utils.ts', lineCount: 10, isExported: false, type: 'function', confidence: 'high' },
+        { name: 'funcB', file: 'src/utils.ts', lineCount: 15, isExported: false, type: 'function', confidence: 'high' },
+        { name: 'funcC', file: 'src/utils.ts', lineCount: 20, isExported: true, type: 'function', confidence: 'low' },
       ],
       totalDeadLines: 45,
       deadCodePercentage: 15,
       totalFunctions: 30,
+      highConfidenceCount: 2,
     };
 
     const recs = generateDeadCodeRecommendations(data);
@@ -45,11 +46,12 @@ describe('generateDeadCodeRecommendations', () => {
   test('generates individual recommendations for large dead functions', () => {
     const data: DeadCodeData = {
       deadFunctions: [
-        { name: 'bigDead', file: 'src/service.ts', lineCount: 60, isExported: true, type: 'function' },
+        { name: 'bigDead', file: 'src/service.ts', lineCount: 60, isExported: true, type: 'function', confidence: 'low' },
       ],
       totalDeadLines: 60,
       deadCodePercentage: 10,
       totalFunctions: 10,
+      highConfidenceCount: 0,
     };
 
     const recs = generateDeadCodeRecommendations(data);
@@ -62,14 +64,15 @@ describe('generateDeadCodeRecommendations', () => {
   test('prioritizes by line count: >50=critical, >20=high, >10=medium, else=low', () => {
     const data: DeadCodeData = {
       deadFunctions: [
-        { name: 'huge', file: 'a.ts', lineCount: 60, isExported: false, type: 'function' },
-        { name: 'big', file: 'b.ts', lineCount: 25, isExported: false, type: 'function' },
-        { name: 'med', file: 'c.ts', lineCount: 15, isExported: false, type: 'function' },
-        { name: 'small', file: 'd.ts', lineCount: 5, isExported: false, type: 'function' },
+        { name: 'huge', file: 'a.ts', lineCount: 60, isExported: false, type: 'function', confidence: 'high' },
+        { name: 'big', file: 'b.ts', lineCount: 25, isExported: false, type: 'function', confidence: 'high' },
+        { name: 'med', file: 'c.ts', lineCount: 15, isExported: false, type: 'function', confidence: 'high' },
+        { name: 'small', file: 'd.ts', lineCount: 5, isExported: false, type: 'function', confidence: 'high' },
       ],
       totalDeadLines: 105,
       deadCodePercentage: 20,
       totalFunctions: 20,
+      highConfidenceCount: 4,
     };
 
     const recs = generateDeadCodeRecommendations(data);
@@ -87,11 +90,12 @@ describe('generateDeadCodeRecommendations', () => {
   test('includes className in action plan for dead methods', () => {
     const data: DeadCodeData = {
       deadFunctions: [
-        { name: 'MyClass.deadMethod', file: 'src/cls.ts', lineCount: 15, isExported: false, type: 'method', className: 'MyClass' },
+        { name: 'MyClass.deadMethod', file: 'src/cls.ts', lineCount: 15, isExported: false, type: 'method', className: 'MyClass', confidence: 'high' },
       ],
       totalDeadLines: 15,
       deadCodePercentage: 5,
       totalFunctions: 20,
+      highConfidenceCount: 1,
     };
 
     const recs = generateDeadCodeRecommendations(data);
@@ -165,6 +169,67 @@ describe('generateDuplicateRecommendations', () => {
     const recs = generateDuplicateRecommendations(dupes);
     // Should suggest a shared location in the common ancestor directory
     expect(recs[0].action_plan.some(s => s.includes('src/modules'))).toBe(true);
+  });
+
+  test('recommendation for matchType: name has title starting with Deduplicate', () => {
+    const dupes: DuplicateGroup[] = [{
+      signature: 'formatDate',
+      functions: [
+        { name: 'formatDate', file: 'src/a.ts', params: '', calls: ['toISO'] },
+        { name: 'formatDate', file: 'src/b.ts', params: '', calls: ['toISO'] },
+      ],
+      similarity: 0.9,
+      matchType: 'name',
+    }];
+
+    const recs = generateDuplicateRecommendations(dupes);
+    expect(recs[0].title).toMatch(/^Deduplicate/);
+  });
+
+  test('recommendation for matchType: structural has title containing Functionally similar', () => {
+    const dupes: DuplicateGroup[] = [{
+      signature: 'loadConfig ~ parseSettings',
+      functions: [
+        { name: 'loadConfig', file: 'src/a.ts', params: 'path:string', calls: ['readFile', 'parse'] },
+        { name: 'parseSettings', file: 'src/b.ts', params: 'path:string', calls: ['readFile', 'parse'] },
+      ],
+      similarity: 0.85,
+      matchType: 'structural',
+    }];
+
+    const recs = generateDuplicateRecommendations(dupes);
+    expect(recs[0].title).toContain('Functionally similar');
+  });
+
+  test('recommendation for structural match mentions both function names', () => {
+    const dupes: DuplicateGroup[] = [{
+      signature: 'loadConfig ~ parseSettings',
+      functions: [
+        { name: 'loadConfig', file: 'src/a.ts', params: '', calls: ['readFile'] },
+        { name: 'parseSettings', file: 'src/b.ts', params: '', calls: ['readFile'] },
+      ],
+      similarity: 0.75,
+      matchType: 'structural',
+    }];
+
+    const recs = generateDuplicateRecommendations(dupes);
+    expect(recs[0].title).toContain('loadConfig');
+    expect(recs[0].title).toContain('parseSettings');
+  });
+
+  test('action plan for structural match suggests review and consolidate', () => {
+    const dupes: DuplicateGroup[] = [{
+      signature: 'loadConfig ~ parseSettings',
+      functions: [
+        { name: 'loadConfig', file: 'src/a.ts', params: '', calls: ['readFile'] },
+        { name: 'parseSettings', file: 'src/b.ts', params: '', calls: ['readFile'] },
+      ],
+      similarity: 0.8,
+      matchType: 'structural',
+    }];
+
+    const recs = generateDuplicateRecommendations(dupes);
+    expect(recs[0].action_plan.some(s => s.toLowerCase().includes('review and consolidate') || s.toLowerCase().includes('consolidate'))).toBe(true);
   });
 });
 
@@ -291,11 +356,12 @@ describe('generateRecommendationReport', () => {
   test('aggregates recommendations from all sources', () => {
     const deadCode: DeadCodeData = {
       deadFunctions: [
-        { name: 'dead', file: 'a.ts', lineCount: 30, isExported: false, type: 'function' },
+        { name: 'dead', file: 'a.ts', lineCount: 30, isExported: false, type: 'function', confidence: 'high' },
       ],
       totalDeadLines: 30,
       deadCodePercentage: 5,
       totalFunctions: 20,
+      highConfidenceCount: 1,
     };
     const dupes: DuplicateGroup[] = [{
       signature: 'dup',
@@ -315,12 +381,13 @@ describe('generateRecommendationReport', () => {
   test('sorts recommendations by priority (critical first)', () => {
     const deadCode: DeadCodeData = {
       deadFunctions: [
-        { name: 'small', file: 'a.ts', lineCount: 8, isExported: false, type: 'function' },
-        { name: 'huge', file: 'b.ts', lineCount: 80, isExported: false, type: 'function' },
+        { name: 'small', file: 'a.ts', lineCount: 8, isExported: false, type: 'function', confidence: 'high' },
+        { name: 'huge', file: 'b.ts', lineCount: 80, isExported: false, type: 'function', confidence: 'high' },
       ],
       totalDeadLines: 88,
       deadCodePercentage: 10,
       totalFunctions: 20,
+      highConfidenceCount: 2,
     };
 
     const report = generateRecommendationReport(deadCode, null, null, null);

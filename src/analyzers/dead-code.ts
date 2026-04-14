@@ -18,6 +18,7 @@ export interface DeadFunction {
   isExported: boolean;
   type: 'function' | 'method';
   className?: string;
+  confidence: 'high' | 'low';
 }
 
 export interface DeadCodeData {
@@ -25,6 +26,7 @@ export interface DeadCodeData {
   totalDeadLines: number;
   deadCodePercentage: number;
   totalFunctions: number;
+  highConfidenceCount: number;
 }
 
 /** Common lifecycle hooks and framework handlers that look dead but aren't */
@@ -85,7 +87,8 @@ function isLifecycleOrFramework(
 function findDeadFunctions(
   p: ParsedFile,
   isEntryFile: boolean,
-  reverseCallGraph: ReverseCallGraph
+  reverseCallGraph: ReverseCallGraph,
+  allExportedNames: Set<string>
 ): { dead: DeadFunction[]; totalFunctions: number; totalLines: number } {
   const dead: DeadFunction[] = [];
   let totalFunctions = 0;
@@ -96,7 +99,9 @@ function findDeadFunctions(
     if (isEntryFile || isLifecycleHook(func.name)) continue;
     const callers = reverseCallGraph[func.name];
     if (!callers || callers.length === 0) {
-      dead.push({ name: func.name, file: p.file.relative, lineCount: func.lineCount, isExported: func.exported, type: 'function' });
+      const isReExported = !func.exported && allExportedNames.has(func.name);
+      const confidence = (func.exported || isReExported) ? 'low' : 'high';
+      dead.push({ name: func.name, file: p.file.relative, lineCount: func.lineCount, isExported: func.exported, type: 'function', confidence });
       totalLines += func.lineCount;
     }
   }
@@ -109,7 +114,9 @@ function findDeadFunctions(
       const qualifiedName = `${cls.name}.${method.name}`;
       const callers = reverseCallGraph[qualifiedName];
       if (!callers || callers.length === 0) {
-        dead.push({ name: qualifiedName, file: p.file.relative, lineCount: method.lineCount, isExported: method.access === 'public', type: 'method', className: cls.name });
+        const isPublic = method.access === 'public';
+        const confidence = isPublic ? 'low' : 'high';
+        dead.push({ name: qualifiedName, file: p.file.relative, lineCount: method.lineCount, isExported: isPublic, type: 'method', className: cls.name, confidence });
         totalLines += method.lineCount;
       }
     }
@@ -131,17 +138,28 @@ export function detectDeadCode(
   let totalFunctions = 0;
   let totalLines = 0;
 
+  // Build set of all exported names across all files (for re-export detection)
+  const allExportedNames = new Set<string>();
   for (const p of parsedFiles) {
-    const result = findDeadFunctions(p, entryPointFiles.has(p.file.relative), reverseCallGraph);
+    for (const exp of p.exports) {
+      allExportedNames.add(exp.name);
+    }
+  }
+
+  for (const p of parsedFiles) {
+    const result = findDeadFunctions(p, entryPointFiles.has(p.file.relative), reverseCallGraph, allExportedNames);
     dead.push(...result.dead);
     totalFunctions += result.totalFunctions;
     totalLines += result.totalLines;
   }
+
+  const highConfidenceCount = dead.filter(d => d.confidence === 'high').length;
 
   return {
     deadFunctions: dead,
     totalDeadLines: totalLines,
     deadCodePercentage: totalFunctions > 0 ? Math.round((dead.length / totalFunctions) * 10000) / 100 : 0,
     totalFunctions,
+    highConfidenceCount,
   };
 }

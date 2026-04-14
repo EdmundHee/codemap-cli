@@ -70,16 +70,32 @@ function buildMethodIndex(allKeys: Set<string>): Map<string, string[]> {
 }
 
 /**
+ * Build a set of standalone function names (keys without a dot prefix).
+ * Used to resolve namespace import calls like utils.foo() → foo.
+ */
+function buildStandaloneFunctionIndex(allKeys: Set<string>): Set<string> {
+  const standalone = new Set<string>();
+  for (const key of allKeys) {
+    if (!key.includes('.')) {
+      standalone.add(key);
+    }
+  }
+  return standalone;
+}
+
+/**
  * Resolve a callee to qualified call graph key(s) using three strategies:
  * 1. Intra-class: unqualified call from same class → "ClassName.method"
  * 2. Method name lookup: "logger.success" → "Logger.success"
+ * 3. Namespace import: "utils.foo" → "foo" if foo is a standalone function
  * Returns an empty array if no resolution is found.
  */
 function resolveCallee(
   callee: string,
   callerClass: string | null,
   methodToQualified: Map<string, string[]>,
-  allKeys: Set<string>
+  allKeys: Set<string>,
+  standaloneFunctions: Set<string>
 ): string[] {
   const calleeDotIdx = callee.indexOf('.');
   const calleeMethod = calleeDotIdx > 0 ? callee.substring(calleeDotIdx + 1) : callee;
@@ -91,6 +107,11 @@ function resolveCallee(
     if (allKeys.has(sameClassCallee)) {
       return [sameClassCallee];
     }
+  }
+
+  // Namespace import: "utils.foo" → "foo" if foo is a standalone function key
+  if (calleeIsQualified && standaloneFunctions.has(calleeMethod)) {
+    return [calleeMethod];
   }
 
   // Method name lookup: "logger.success" or "success" → "Logger.success"
@@ -124,6 +145,7 @@ export function buildReverseCallGraph(callGraph: CallGraph): ReverseCallGraph {
   }
 
   const methodToQualified = buildMethodIndex(allKeys);
+  const standaloneFunctions = buildStandaloneFunctionIndex(allKeys);
 
   // Populate reverse mappings
   for (const [caller, callees] of Object.entries(callGraph)) {
@@ -140,7 +162,7 @@ export function buildReverseCallGraph(callGraph: CallGraph): ReverseCallGraph {
       if (allKeys.has(callee)) continue;
 
       // Resolve to qualified key(s) and register those callers too
-      const resolved = resolveCallee(callee, callerClass, methodToQualified, allKeys);
+      const resolved = resolveCallee(callee, callerClass, methodToQualified, allKeys, standaloneFunctions);
       for (const r of resolved) {
         addCaller(r, caller);
       }

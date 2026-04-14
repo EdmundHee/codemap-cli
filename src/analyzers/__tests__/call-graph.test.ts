@@ -193,4 +193,43 @@ describe('buildReverseCallGraph', () => {
     expect(reverse['init']).toContain('__module__src/index.ts');
     expect(reverse['configure']).toContain('__module__src/index.ts');
   });
+
+  test('resolves namespace import calls: utils.foo → standalone foo', () => {
+    const graph: CallGraph = Object.create(null);
+    graph['foo'] = [];
+    graph['caller'] = ['utils.foo'];
+
+    const reverse = buildReverseCallGraph(graph);
+    expect(reverse['foo']).toContain('caller');
+  });
+
+  test('resolves namespace import calls: prefix.bar → standalone bar', () => {
+    const graph: CallGraph = Object.create(null);
+    graph['bar'] = [];
+    graph['main'] = ['prefix.bar'];
+
+    const reverse = buildReverseCallGraph(graph);
+    expect(reverse['bar']).toContain('main');
+  });
+
+  test('namespace import does NOT resolve to class method only', () => {
+    const graph: CallGraph = Object.create(null);
+    graph['SomeClass.baz'] = [];
+    graph['caller'] = ['prefix.baz'];
+    // 'baz' does NOT exist as standalone function
+
+    const reverse = buildReverseCallGraph(graph);
+    // Should resolve via method lookup to SomeClass.baz
+    expect(reverse['SomeClass.baz']).toContain('caller');
+  });
+
+  test('backward compat: buildReverseCallGraph without parsedFiles works', () => {
+    const graph: CallGraph = Object.create(null);
+    graph['a'] = ['b'];
+    graph['b'] = [];
+
+    const reverse = buildReverseCallGraph(graph);
+    expect(reverse['b']).toContain('a');
+    expect(reverse['a']).toEqual([]);
+  });
 });
