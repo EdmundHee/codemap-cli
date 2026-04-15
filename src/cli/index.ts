@@ -11,6 +11,7 @@ import { queryCommand } from './commands/query';
 import { checkCommand } from './commands/check';
 import { healthCommand } from './commands/health';
 import { hooksCommand } from './commands/hooks';
+import { contextCommand } from './commands/context';
 
 // Read version from package.json so it stays in sync with npm version
 let version = '0.0.0';
@@ -50,5 +51,6 @@ program.addCommand(queryCommand);
 program.addCommand(checkCommand);
 program.addCommand(healthCommand);
 program.addCommand(hooksCommand);
+program.addCommand(contextCommand);
 
 program.parse(process.argv);

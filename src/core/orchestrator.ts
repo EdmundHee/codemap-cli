@@ -15,6 +15,7 @@ import { generateMarkdown, generateModuleMarkdown } from '../output/md-generator
 import { pathToModuleKey } from '../utils/file-utils';
 import { appendHistory } from '../analyzers/history';
 import { getAllEnrichers } from '../enrichers';
+import { generateSyntheticEdges, compileUserRules } from '../frameworks/synthetic-callers';
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
@@ -67,6 +68,21 @@ export class Orchestrator {
     this.logger.start('Building relationship graphs...');
     const importGraph = buildImportGraph(parsed);
     const callGraph = buildCallGraph(parsed);
+
+    // Step 4.5: Add synthetic framework callers
+    const allFrameworks = [
+      ...frameworks,
+      ...(this.config.dead_code?.force_frameworks ?? []),
+    ];
+    const userRules = compileUserRules(this.config.dead_code?.synthetic_callers);
+    const syntheticEdges = generateSyntheticEdges(parsed, allFrameworks, userRules);
+    for (const { caller, callee } of syntheticEdges) {
+      if (!callGraph[caller]) callGraph[caller] = [];
+      if (!callGraph[caller].includes(callee)) callGraph[caller].push(callee);
+    }
+    if (syntheticEdges.length > 0) {
+      this.logger.info(`Injected ${syntheticEdges.length} synthetic framework callers`);
+    }
 
     // Step 5: Assemble codemap data
     this.logger.start('Assembling codemap...');

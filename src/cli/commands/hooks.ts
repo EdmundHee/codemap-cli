@@ -39,6 +39,16 @@ const CODEMAP_HOOKS: ClaudeSettings['hooks'] = {
       ],
     },
   ],
+  SessionStart: [
+    {
+      hooks: [
+        {
+          type: 'command',
+          command: 'codemap context --quiet',
+        },
+      ],
+    },
+  ],
 };
 
 const CODEMAP_HOOK_MARKER = '__codemap_auto_refresh';
@@ -70,7 +80,7 @@ function mergeHooks(settings: ClaudeSettings): ClaudeSettings {
     const cleaned = existing.filter(
       (m) =>
         !m.hooks?.some((h) =>
-          h.command?.includes('codemap check') || h.command?.includes('codemap generate')
+          h.command?.includes('codemap check') || h.command?.includes('codemap generate') || h.command?.includes('codemap context')
         )
     );
 
@@ -92,7 +102,7 @@ function removeHooks(settings: ClaudeSettings): ClaudeSettings {
     merged.hooks[event] = merged.hooks[event].filter(
       (m) =>
         !m.hooks?.some((h) =>
-          h.command?.includes('codemap check') || h.command?.includes('codemap generate')
+          h.command?.includes('codemap check') || h.command?.includes('codemap generate') || h.command?.includes('codemap context')
         )
     );
     // Clean up empty event arrays
@@ -118,7 +128,7 @@ function hasCodemapHooks(settings: ClaudeSettings): boolean {
     for (const m of matchers) {
       if (
         m.hooks?.some((h) =>
-          h.command?.includes('codemap check') || h.command?.includes('codemap generate')
+          h.command?.includes('codemap check') || h.command?.includes('codemap generate') || h.command?.includes('codemap context')
         )
       ) {
         return true;
@@ -147,6 +157,7 @@ export function setupHooks(root: string, logger: Logger): void {
   }
 
   logger.info('Hook: PostToolUse (Edit|Write) → auto-regenerate codemap after code changes');
+  logger.info('Hook: SessionStart → show project context at session start');
 }
 
 export const hooksCommand = new Command('hooks')
@@ -168,7 +179,7 @@ export const hooksCommand = new Command('hooks')
           for (const m of matchers) {
             if (
               m.hooks?.some((h) =>
-                h.command?.includes('codemap check') || h.command?.includes('codemap generate')
+                h.command?.includes('codemap check') || h.command?.includes('codemap generate') || h.command?.includes('codemap context')
               )
             ) {
               logger.info(`  ${event}${m.matcher ? ` (${m.matcher})` : ''} → codemap auto-refresh`);

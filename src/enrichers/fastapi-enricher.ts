@@ -402,7 +402,7 @@ function extractRoutesFromFunction(
   filePath: string,
   routerInfo: RouterInfo | undefined
 ): { route?: RouteInfo; middleware: Record<string, MiddlewareInfo> } {
-  const funcDecorators: string[] = (func as any).decorators || [];
+  const funcDecorators: string[] = func.decorators ?? [];
   const middlewareResult: Record<string, MiddlewareInfo> = {};
 
   const parsed = parseRouteDecorator(funcDecorators);
@@ -434,7 +434,7 @@ function extractMiddlewareFromFunction(
   filePath: string
 ): Record<string, MiddlewareInfo> {
   const result: Record<string, MiddlewareInfo> = {};
-  const funcDecorators: string[] = (func as any).decorators || [];
+  const funcDecorators: string[] = func.decorators ?? [];
 
   // Check for middleware decorator pattern
   for (const d of funcDecorators) {

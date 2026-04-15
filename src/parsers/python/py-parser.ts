@@ -264,6 +264,7 @@ export class PythonParser implements ParserInterface {
           return_type: truncateType(returnType),
           async: isAsync,
           exported,
+          decorators: node.type === 'decorated_definition' ? this.extractDecorators(funcNode) : [],
           calls: filterCalls(calls),
           complexity: computePyComplexity(funcNode),
           lineCount: computePyLineCount(funcNode),

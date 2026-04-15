@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 interface FrameworkSignal {
@@ -86,25 +86,75 @@ const FRAMEWORK_SIGNALS: FrameworkSignal[] = [
     name: 'pinia',
     detect: (root) => hasDependency(root, 'pinia'),
   },
+  // ── Task queues & testing ──
+  {
+    name: 'celery',
+    detect: (root) => hasPythonDependency(root, 'celery'),
+  },
+  {
+    name: 'pytest',
+    detect: (root) => hasPythonDependency(root, 'pytest'),
+  },
+  {
+    name: 'langgraph',
+    detect: (root) => hasPythonDependency(root, 'langgraph'),
+  },
 ];
 
-/**
- * Auto-detect frameworks used in the project by scanning config files.
- */
-export async function detectFrameworks(root: string): Promise<string[]> {
-  const detected: string[] = [];
+/** Directories to skip when scanning for monorepo subdirectories */
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', 'dist', 'build', '.next', '.nuxt',
+  'venv', '.venv', 'env', '.env', '__pycache__', 'coverage',
+  '.codemap', '.tox', 'eggs', 'site-packages', 'vendor', 'lib',
+]);
 
+/** Scan a single root for frameworks */
+function scanRoot(root: string, detected: Set<string>): void {
   for (const signal of FRAMEWORK_SIGNALS) {
     try {
       if (signal.detect(root)) {
-        detected.push(signal.name);
+        detected.add(signal.name);
       }
     } catch {
       // Ignore detection errors for individual frameworks
     }
   }
+}
 
-  return detected;
+/** Check if a directory has its own dependency file */
+function hasAnyDependencyFile(dir: string): boolean {
+  return (
+    existsSync(join(dir, 'package.json')) ||
+    existsSync(join(dir, 'requirements.txt')) ||
+    existsSync(join(dir, 'pyproject.toml'))
+  );
+}
+
+/**
+ * Auto-detect frameworks used in the project by scanning config files.
+ * Also scans immediate subdirectories for monorepo support.
+ */
+export async function detectFrameworks(root: string): Promise<string[]> {
+  const detected = new Set<string>();
+
+  // Scan project root
+  scanRoot(root, detected);
+
+  // Scan immediate subdirectories for monorepo packages
+  try {
+    const entries = readdirSync(root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || SKIP_DIRS.has(entry.name)) continue;
+      const subRoot = join(root, entry.name);
+      if (hasAnyDependencyFile(subRoot)) {
+        scanRoot(subRoot, detected);
+      }
+    }
+  } catch {
+    // Ignore errors reading subdirectories
+  }
+
+  return [...detected];
 }
 
 /** Check if a Node.js project has a dependency in package.json */

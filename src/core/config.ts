@@ -29,6 +29,18 @@ export interface CodemapConfig {
   max_call_depth: number;
   /** Custom entry points (null = auto-detect) */
   entry_points: string[] | null;
+  /** Dead code analysis configuration */
+  dead_code?: {
+    /** Custom synthetic caller rules for frameworks codemap doesn't know about */
+    synthetic_callers?: Array<{
+      caller: string;
+      decorator_patterns?: string[];
+      name_patterns?: string[];
+      file_patterns?: string[];
+    }>;
+    /** Force-load framework rules even if framework not auto-detected */
+    force_frameworks?: string[];
+  };
 }
 
 export const WELL_KNOWN_SOURCE_DIRS = [

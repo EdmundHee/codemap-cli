@@ -48,10 +48,13 @@ describe('detectDeadCode', () => {
     expect(result.totalDeadLines).toBe(20);
   });
 
-  test('exempts lifecycle hooks from dead code detection', () => {
-    const lifecycleHooks = ['constructor', 'init', 'setup', 'render', 'ngOnInit', 'mounted', '__init__', 'main'];
+  test('functions with synthetic framework callers are not dead', () => {
+    // Lifecycle hooks and framework functions are now exempt via synthetic
+    // callers injected into the call graph by synthetic-callers.ts.
+    // This test verifies that functions with synthetic callers are not dead.
+    const hookNames = ['__init__', 'mounted', 'ngOnInit'];
 
-    for (const hookName of lifecycleHooks) {
+    for (const hookName of hookNames) {
       const parsed: ParsedFile[] = [
         makeParsed({
           file: makeFile('src/component.ts'),
@@ -61,8 +64,9 @@ describe('detectDeadCode', () => {
         }),
       ];
 
+      // Simulate synthetic callers injected by the pipeline
       const reverseGraph: ReverseCallGraph = Object.create(null);
-      reverseGraph[hookName] = [];
+      reverseGraph[hookName] = ['__runtime__'];
 
       const result = detectDeadCode(parsed, reverseGraph, []);
       expect(result.deadFunctions.find(f => f.name === hookName)).toBeUndefined();
@@ -86,7 +90,9 @@ describe('detectDeadCode', () => {
     expect(result.deadFunctions).toHaveLength(0);
   });
 
-  test('exempts methods with framework decorators', () => {
+  test('methods with synthetic framework callers are not dead', () => {
+    // Framework-decorated methods (e.g. @Get) are now exempt via synthetic
+    // callers injected into the call graph by synthetic-callers.ts.
     const parsed: ParsedFile[] = [
       makeParsed({
         file: makeFile('src/controller.ts'),
@@ -103,8 +109,9 @@ describe('detectDeadCode', () => {
       }),
     ];
 
+    // Simulate synthetic callers injected by the pipeline for NestJS
     const reverseGraph: ReverseCallGraph = Object.create(null);
-    reverseGraph['UserController.getUsers'] = [];
+    reverseGraph['UserController.getUsers'] = ['__nestjs__'];
 
     const result = detectDeadCode(parsed, reverseGraph, []);
     expect(result.deadFunctions).toHaveLength(0);
