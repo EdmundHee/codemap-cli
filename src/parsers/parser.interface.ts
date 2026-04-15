@@ -48,6 +48,8 @@ export interface FunctionInfo {
   return_type: string;
   async: boolean;
   exported: boolean;
+  /** Decorator strings (e.g. ["@celery.task", "@app.get(\"/users\")"]) */
+  decorators?: string[];
   /** Functions this function calls */
   calls: string[];
   /** Cyclomatic complexity (decision point count, starting at 1) */

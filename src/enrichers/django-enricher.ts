@@ -137,7 +137,7 @@ function extractListArgs(args: string): string[] {
 
 function isViewFunction(func: FunctionInfo, imports: ImportInfo[]): boolean {
   // Check if function has view-related decorators
-  for (const d of (func as any).decorators || []) {
+  for (const d of func.decorators ?? []) {
     const name = stripDecorator(d);
     if (VIEW_DECORATORS.has(name) || name === 'api_view') return true;
   }
@@ -395,7 +395,7 @@ function extractSignals(parsed: ParsedFile): SignalInfo[] {
 
   for (const func of parsed.functions) {
     // Check decorators for @receiver(signal, sender=Model)
-    for (const d of (func as any).decorators || []) {
+    for (const d of func.decorators ?? []) {
       const name = stripDecorator(d);
       if (name === 'receiver') {
         const args = extractDecoratorArgs(d);
@@ -430,7 +430,7 @@ function extractTemplateTags(parsed: ParsedFile): TemplateTagInfo[] {
   if (!parsed.file.relative.includes('templatetags/')) return tags;
 
   for (const func of parsed.functions) {
-    for (const d of (func as any).decorators || []) {
+    for (const d of func.decorators ?? []) {
       const name = stripDecorator(d);
       let kind: TemplateTagInfo['kind'] | undefined;
 
@@ -657,7 +657,7 @@ function extractAuthFromDecorators(decorators: string[]): string[] | undefined {
 function extractFunctionBasedView(func: FunctionInfo, imports: ImportInfo[], filePath: string): RouteInfo | null {
   if (!isViewFunction(func, imports)) return null;
 
-  const decorators: string[] = (func as any).decorators || [];
+  const decorators: string[] = func.decorators ?? [];
   const route: RouteInfo = {
     method: extractHttpMethodsFromDecorators(decorators),
     path: '',

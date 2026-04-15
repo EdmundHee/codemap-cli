@@ -209,6 +209,44 @@ function formatParamInsights(tools: [string, ToolMetrics][]): string[] {
   return [];
 }
 
+function formatDailyBreakdown(intervals: [string, IntervalBucket][]): string[] {
+  if (intervals.length === 0) return [];
+
+  // Group intervals by date
+  const dailyMap = new Map<string, { calls: number; errors: number; tools: Record<string, number> }>();
+  for (const [, bucket] of intervals) {
+    // Extract date from label like "2026-03-20 10:00–15:00" or key like "2026-03-20/10:00-15:00"
+    const date = bucket.label.split(' ')[0];
+    if (!dailyMap.has(date)) {
+      dailyMap.set(date, { calls: 0, errors: 0, tools: {} });
+    }
+    const day = dailyMap.get(date)!;
+    day.calls += bucket.totalCalls;
+    day.errors += bucket.totalErrors;
+    for (const [tool, count] of Object.entries(bucket.toolCalls)) {
+      day.tools[tool] = (day.tools[tool] || 0) + count;
+    }
+  }
+
+  const lines: string[] = [];
+  lines.push('\n## Daily Breakdown\n');
+  lines.push('| Date | Calls | Errors | Top Tools |');
+  lines.push('|------|------:|-------:|-----------|');
+
+  // Sort by date descending (most recent first)
+  const sortedDays = [...dailyMap.entries()].sort(([a], [b]) => b.localeCompare(a));
+  for (const [date, day] of sortedDays) {
+    const topTools = Object.entries(day.tools)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 3)
+      .map(([name, count]) => `${name.replace('codemap_', '')}(${count})`)
+      .join(', ');
+    lines.push(`| ${date} | ${day.calls} | ${day.errors} | ${topTools} |`);
+  }
+
+  return lines;
+}
+
 function formatIntervalBreakdown(intervals: [string, IntervalBucket][]): string[] {
   if (intervals.length === 0) return [];
   const lines: string[] = [];
@@ -443,6 +481,7 @@ export class UsageTracker {
       .sort(([a], [b]) => a.localeCompare(b))
       .slice(-20);
 
+    lines.push(...formatDailyBreakdown(intervalEntries));
     lines.push(...formatIntervalBreakdown(intervalEntries));
 
     // Collect all tool names across intervals for heatmap

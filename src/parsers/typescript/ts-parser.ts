@@ -123,6 +123,7 @@ export class TypeScriptParser implements ParserInterface {
         return_type: truncateType(func.getReturnType().getText(func) || 'void'),
         async: func.isAsync(),
         exported: func.isExported(),
+        decorators: [],
         calls: filterCalls(this.extractCallExpressions(func)),
         complexity: computeTSComplexity(func),
         lineCount: computeTSLineCount(func),
